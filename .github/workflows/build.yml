@@ -27,37 +27,10 @@ jobs:
         uses: astral-sh/setup-uv@v4
 
       - name: Install dependencies
-        run: |
-          uv venv
-          source .venv/bin/activate
-          uv pip install -e ".[dev]"
+        run: make init
 
-      - name: Run linter
-        run: |
-          source .venv/bin/activate
-          ruff check src/ tests/
-
-      - name: Run type checker
-        run: |
-          source .venv/bin/activate
-          mypy src/ --python-version 3.11 --ignore-missing-imports
-
-      - name: Run tests with coverage
-        run: |
-          source .venv/bin/activate
-          PYTHONPATH=src/ coverage run -m pytest tests/ -v
-          coverage report --fail-under=80
-
-      - name: Run security scan
-        run: |
-          source .venv/bin/activate
-          pip install bandit
-          bandit -r src/ -f screen
-
-      - name: Build package
-        run: |
-          source .venv/bin/activate
-          python -m build
+      - name: Build (lint, test, security, package)
+        run: make build
 
       - name: Upload coverage report
         if: matrix.python-version == '3.11'
