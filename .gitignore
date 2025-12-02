@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.eggs/
+*.egg-info/
+dist/
+build/
+
+# Secrets - NEVER commit these
+secrets/*
+!secrets/.gitkeep
+*.p8
+*.pem
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.sublime-project
+*.sublime-workspace
+
+# AI Tools
+.claude/
+.claude_memory
+.cursorrules
+.cursor/
+.aider*
+.continue/
+.codeium/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+target/
+
+# Linting & Type Checking
+.mypy_cache/
+.ruff_cache/
+.secrets/
