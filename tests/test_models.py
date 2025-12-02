@@ -9,6 +9,7 @@ from deployment_queue.models import (
     Deployment,
     DeploymentCreate,
     DeploymentStatus,
+    DeploymentTrigger,
     DeploymentType,
     DeploymentUpdate,
     Provider,
@@ -35,6 +36,11 @@ class TestEnums:
         assert DeploymentStatus.deployed.value == "deployed"
         assert DeploymentStatus.skipped.value == "skipped"
         assert DeploymentStatus.failed.value == "failed"
+
+    def test_deployment_trigger_values(self):
+        assert DeploymentTrigger.manual.value == "manual"
+        assert DeploymentTrigger.auto.value == "auto"
+        assert DeploymentTrigger.rollback.value == "rollback"
 
 
 class TestDeploymentCreate:
@@ -63,7 +69,7 @@ class TestDeploymentCreate:
             cloud_account_id="123456789",
             region="us-east-1",
             environment="staging",
-            cell="cell-1",
+            cell_id="cell-1",
             type=DeploymentType.terraform,
             auto=False,
             description="Test deployment",
@@ -74,6 +80,7 @@ class TestDeploymentCreate:
         )
         assert deployment.commit_sha == "abc123"
         assert deployment.auto is False
+        assert deployment.cell_id == "cell-1"
 
     def test_deployment_create_missing_required_fields(self):
         with pytest.raises(ValidationError):
@@ -133,15 +140,65 @@ class TestDeployment:
             id="test-uuid",
             created_at=now,
             updated_at=now,
+            organisation="test-org",
             name="test-service",
             version="1.0.0",
             provider=Provider.gcp,
             environment="production",
             type=DeploymentType.k8s,
             status=DeploymentStatus.scheduled,
+            auto=True,
+            trigger=DeploymentTrigger.auto,
         )
         assert deployment.id == "test-uuid"
         assert deployment.status == DeploymentStatus.scheduled
+        assert deployment.organisation == "test-org"
+        assert deployment.trigger == DeploymentTrigger.auto
+
+    def test_deployment_with_lineage_fields(self):
+        now = datetime.now(UTC)
+        deployment = Deployment(
+            id="test-uuid",
+            created_at=now,
+            updated_at=now,
+            organisation="test-org",
+            name="test-service",
+            version="1.0.0",
+            provider=Provider.gcp,
+            environment="production",
+            type=DeploymentType.k8s,
+            status=DeploymentStatus.scheduled,
+            auto=True,
+            trigger=DeploymentTrigger.rollback,
+            source_deployment_id="original-uuid",
+            rollback_from_deployment_id="failed-uuid",
+        )
+        assert deployment.trigger == DeploymentTrigger.rollback
+        assert deployment.source_deployment_id == "original-uuid"
+        assert deployment.rollback_from_deployment_id == "failed-uuid"
+
+    def test_deployment_with_audit_fields(self):
+        now = datetime.now(UTC)
+        deployment = Deployment(
+            id="test-uuid",
+            created_at=now,
+            updated_at=now,
+            organisation="test-org",
+            name="test-service",
+            version="1.0.0",
+            provider=Provider.gcp,
+            environment="production",
+            type=DeploymentType.k8s,
+            status=DeploymentStatus.scheduled,
+            auto=True,
+            trigger=DeploymentTrigger.manual,
+            created_by_repo="test-org/test-repo",
+            created_by_workflow="deploy.yml",
+            created_by_actor="test-user",
+        )
+        assert deployment.created_by_repo == "test-org/test-repo"
+        assert deployment.created_by_workflow == "deploy.yml"
+        assert deployment.created_by_actor == "test-user"
 
 
 class TestRowToDeployment:
@@ -153,6 +210,7 @@ class TestRowToDeployment:
             "ID": "test-uuid",
             "CREATED_AT": now,
             "UPDATED_AT": now,
+            "ORGANISATION": "test-org",
             "NAME": "test-service",
             "VERSION": "1.0.0",
             "COMMIT_SHA": "abc123",
@@ -161,31 +219,40 @@ class TestRowToDeployment:
             "CLOUD_ACCOUNT_ID": "project-123",
             "REGION": "us-central1",
             "ENVIRONMENT": "production",
-            "CELL": None,
+            "CELL_ID": None,
             "TYPE": "k8s",
             "STATUS": "scheduled",
             "AUTO": True,
             "DESCRIPTION": "Test",
             "NOTES": None,
+            "TRIGGER": "auto",
+            "SOURCE_DEPLOYMENT_ID": None,
+            "ROLLBACK_FROM_DEPLOYMENT_ID": None,
             "BUILD_URI": None,
             "DEPLOYMENT_URI": None,
             "RESOURCE": None,
+            "CREATED_BY_REPO": None,
+            "CREATED_BY_WORKFLOW": None,
+            "CREATED_BY_ACTOR": None,
         }
 
         deployment = row_to_deployment(row)
 
         assert deployment.id == "test-uuid"
+        assert deployment.organisation == "test-org"
         assert deployment.name == "test-service"
         assert deployment.provider == Provider.gcp
         assert deployment.status == DeploymentStatus.scheduled
-        assert deployment.cell is None
+        assert deployment.cell_id is None
+        assert deployment.trigger == DeploymentTrigger.auto
 
-    def test_row_to_deployment_with_cell(self):
+    def test_row_to_deployment_with_cell_id(self):
         now = datetime.now(UTC)
         row = {
             "ID": "test-uuid",
             "CREATED_AT": now,
             "UPDATED_AT": now,
+            "ORGANISATION": "test-org",
             "NAME": "test-service",
             "VERSION": "1.0.0",
             "COMMIT_SHA": None,
@@ -194,20 +261,69 @@ class TestRowToDeployment:
             "CLOUD_ACCOUNT_ID": "123456789",
             "REGION": "us-east-1",
             "ENVIRONMENT": "staging",
-            "CELL": "cell-1",
+            "CELL_ID": "cell-1",
             "TYPE": "terraform",
             "STATUS": "deployed",
             "AUTO": False,
             "DESCRIPTION": None,
             "NOTES": "Some notes",
+            "TRIGGER": "manual",
+            "SOURCE_DEPLOYMENT_ID": None,
+            "ROLLBACK_FROM_DEPLOYMENT_ID": None,
             "BUILD_URI": "https://build.example.com",
             "DEPLOYMENT_URI": "https://deploy.example.com",
             "RESOURCE": "arn:aws:s3:::bucket",
+            "CREATED_BY_REPO": "test-org/test-repo",
+            "CREATED_BY_WORKFLOW": "deploy.yml",
+            "CREATED_BY_ACTOR": "test-user",
         }
 
         deployment = row_to_deployment(row)
 
-        assert deployment.cell == "cell-1"
+        assert deployment.cell_id == "cell-1"
         assert deployment.provider == Provider.aws
         assert deployment.status == DeploymentStatus.deployed
         assert deployment.auto is False
+        assert deployment.trigger == DeploymentTrigger.manual
+        assert deployment.created_by_repo == "test-org/test-repo"
+        assert deployment.created_by_workflow == "deploy.yml"
+        assert deployment.created_by_actor == "test-user"
+
+    def test_row_to_deployment_with_lineage(self):
+        now = datetime.now(UTC)
+        row = {
+            "ID": "rollback-uuid",
+            "CREATED_AT": now,
+            "UPDATED_AT": now,
+            "ORGANISATION": "test-org",
+            "NAME": "test-service",
+            "VERSION": "1.0.0",
+            "COMMIT_SHA": None,
+            "PIPELINE_EXTRA_PARAMS": None,
+            "PROVIDER": "gcp",
+            "CLOUD_ACCOUNT_ID": "project-123",
+            "REGION": "us-central1",
+            "ENVIRONMENT": "production",
+            "CELL_ID": None,
+            "TYPE": "k8s",
+            "STATUS": "scheduled",
+            "AUTO": True,
+            "DESCRIPTION": None,
+            "NOTES": None,
+            "TRIGGER": "rollback",
+            "SOURCE_DEPLOYMENT_ID": "original-uuid",
+            "ROLLBACK_FROM_DEPLOYMENT_ID": "failed-uuid",
+            "BUILD_URI": None,
+            "DEPLOYMENT_URI": None,
+            "RESOURCE": None,
+            "CREATED_BY_REPO": None,
+            "CREATED_BY_WORKFLOW": None,
+            "CREATED_BY_ACTOR": None,
+        }
+
+        deployment = row_to_deployment(row)
+
+        assert deployment.id == "rollback-uuid"
+        assert deployment.trigger == DeploymentTrigger.rollback
+        assert deployment.source_deployment_id == "original-uuid"
+        assert deployment.rollback_from_deployment_id == "failed-uuid"

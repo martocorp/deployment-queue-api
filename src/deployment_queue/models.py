@@ -33,8 +33,16 @@ class DeploymentStatus(str, Enum):
     failed = "failed"
 
 
+class DeploymentTrigger(str, Enum):
+    """Deployment trigger options."""
+
+    manual = "manual"
+    auto = "auto"
+    rollback = "rollback"
+
+
 class DeploymentCreate(BaseModel):
-    """Model for creating a new deployment."""
+    """Request body for creating a deployment. Organisation is set from token."""
 
     name: str
     version: str
@@ -44,7 +52,7 @@ class DeploymentCreate(BaseModel):
     cloud_account_id: Optional[str] = None
     region: Optional[str] = None
     environment: str
-    cell: Optional[str] = None
+    cell_id: Optional[str] = None
     type: DeploymentType
     auto: bool = True
     description: Optional[str] = None
@@ -55,31 +63,20 @@ class DeploymentCreate(BaseModel):
 
 
 class DeploymentUpdate(BaseModel):
-    """Model for updating an existing deployment."""
+    """Request body for updating a deployment."""
 
     status: Optional[DeploymentStatus] = None
     notes: Optional[str] = None
     deployment_uri: Optional[str] = None
 
 
-class StatusUpdate(BaseModel):
-    """Model for updating deployment status via taxonomy."""
-
-    status: DeploymentStatus
-
-
-class RollbackRequest(BaseModel):
-    """Model for rollback request."""
-
-    target_version: Optional[str] = None
-
-
 class Deployment(BaseModel):
-    """Full deployment model for responses."""
+    """Full deployment model returned in responses."""
 
     id: str
     created_at: datetime
     updated_at: datetime
+    organisation: str
     name: str
     version: str
     commit_sha: Optional[str] = None
@@ -88,26 +85,24 @@ class Deployment(BaseModel):
     cloud_account_id: Optional[str] = None
     region: Optional[str] = None
     environment: str
-    cell: Optional[str] = None
+    cell_id: Optional[str] = None
     type: DeploymentType
-    status: DeploymentStatus = DeploymentStatus.scheduled
-    auto: bool = True
+    status: DeploymentStatus
+    auto: bool
     description: Optional[str] = None
     notes: Optional[str] = None
+    # Lineage
+    trigger: DeploymentTrigger
+    source_deployment_id: Optional[str] = None
+    rollback_from_deployment_id: Optional[str] = None
+    # Pipeline
     build_uri: Optional[str] = None
     deployment_uri: Optional[str] = None
     resource: Optional[str] = None
-
-
-class TaxonomyQuery(BaseModel):
-    """Query parameters for taxonomy-based operations."""
-
-    name: str
-    environment: str
-    provider: Provider
-    cloud_account_id: str
-    region: str
-    cell: Optional[str] = None
+    # Audit
+    created_by_repo: Optional[str] = None
+    created_by_workflow: Optional[str] = None
+    created_by_actor: Optional[str] = None
 
 
 def row_to_deployment(row: dict) -> Deployment:
@@ -116,6 +111,7 @@ def row_to_deployment(row: dict) -> Deployment:
         id=row["ID"],
         created_at=row["CREATED_AT"],
         updated_at=row["UPDATED_AT"],
+        organisation=row["ORGANISATION"],
         name=row["NAME"],
         version=row["VERSION"],
         commit_sha=row.get("COMMIT_SHA"),
@@ -124,13 +120,19 @@ def row_to_deployment(row: dict) -> Deployment:
         cloud_account_id=row.get("CLOUD_ACCOUNT_ID"),
         region=row.get("REGION"),
         environment=row["ENVIRONMENT"],
-        cell=row.get("CELL"),
+        cell_id=row.get("CELL_ID"),
         type=row["TYPE"],
         status=row["STATUS"],
         auto=row.get("AUTO", True),
         description=row.get("DESCRIPTION"),
         notes=row.get("NOTES"),
+        trigger=row.get("TRIGGER", "manual"),
+        source_deployment_id=row.get("SOURCE_DEPLOYMENT_ID"),
+        rollback_from_deployment_id=row.get("ROLLBACK_FROM_DEPLOYMENT_ID"),
         build_uri=row.get("BUILD_URI"),
         deployment_uri=row.get("DEPLOYMENT_URI"),
         resource=row.get("RESOURCE"),
+        created_by_repo=row.get("CREATED_BY_REPO"),
+        created_by_workflow=row.get("CREATED_BY_WORKFLOW"),
+        created_by_actor=row.get("CREATED_BY_ACTOR"),
     )

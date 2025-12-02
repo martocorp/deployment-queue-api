@@ -2,6 +2,11 @@
 
 A FastAPI-based REST API to manage a deployment queue across multiple cloud providers (GCP, AWS, Azure). The API tracks deployment lifecycle, enables status updates via cloud taxonomy, and supports rollbacks.
 
+**Key Features:**
+- **Dual Authentication**: GitHub OIDC for Actions, GitHub PAT for CLI
+- **Multi-Tenant Isolation**: Each GitHub organisation has isolated data
+- **Deployment Lineage**: Track rollback chains with source and rollback references
+
 ## Documentation
 
 - [Usage Guide](docs/USAGE.md) - Detailed usage instructions, API reference, and examples
@@ -47,6 +52,12 @@ SNOWFLAKE_PRIVATE_KEY_PASSPHRASE=your_passphrase_if_key_is_encrypted
 SNOWFLAKE_WAREHOUSE=COMPUTE_WH
 SNOWFLAKE_DATABASE=DEPLOYMENTS_DB
 SNOWFLAKE_SCHEMA=PUBLIC
+
+# Authentication
+AUTH_ENABLED=true
+GITHUB_OIDC_ISSUER=https://token.actions.githubusercontent.com
+GITHUB_OIDC_AUDIENCE=deployment-queue-api
+ALLOWED_ORGANISATIONS=my-org,another-org  # comma-separated, or empty for all
 ```
 
 ### 3. Place RSA Private Key
@@ -128,12 +139,57 @@ Once running, interactive documentation is available at:
 - **Swagger UI**: http://localhost:8000/docs
 - **ReDoc**: http://localhost:8000/redoc
 
+## Authentication
+
+The API supports two authentication methods. All endpoints (except `/health`) require authentication.
+
+| Source | Auth Method | Headers |
+|--------|-------------|---------|
+| **GitHub Actions** | OIDC JWT | `Authorization: Bearer <jwt>` |
+| **CLI** | GitHub PAT | `Authorization: Bearer <pat>` + `X-Organisation: <org>` |
+
+### GitHub Actions Example (OIDC)
+
+```yaml
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Required for OIDC
+    steps:
+      - name: Get OIDC Token
+        id: token
+        run: |
+          TOKEN=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=deployment-queue-api" | jq -r '.value')
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
+      - name: Create Deployment
+        run: |
+          curl -X POST https://your-api/v1/deployments \
+            -H "Authorization: Bearer ${{ steps.token.outputs.token }}" \
+            -H "Content-Type: application/json" \
+            -d '{"name": "my-service", "version": "1.0.0", ...}'
+```
+
+### CLI Example (PAT)
+
+```bash
+# With GitHub Personal Access Token
+curl -X GET "https://api.example.com/v1/deployments" \
+  -H "Authorization: Bearer ghp_xxxxxxxxxxxx" \
+  -H "X-Organisation: my-org"
+```
+
 ## Example Usage
+
+All examples below require the `Authorization: Bearer <token>` header.
 
 ### Create a Deployment
 
 ```bash
 curl -X POST http://localhost:8000/v1/deployments \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "my-service",
@@ -149,7 +205,8 @@ curl -X POST http://localhost:8000/v1/deployments \
 ### Get Current Deployment by Taxonomy
 
 ```bash
-curl "http://localhost:8000/v1/deployments/current?\
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/v1/deployments/current?\
 name=my-service&\
 environment=production&\
 provider=gcp&\
@@ -160,27 +217,26 @@ region=us-central1"
 ### Update Deployment Status
 
 ```bash
-curl -X PATCH "http://localhost:8000/v1/deployments/current/status?\
+curl -X PATCH -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/v1/deployments/current/status?\
 name=my-service&\
 environment=production&\
 provider=gcp&\
 cloud_account_id=my-project&\
-region=us-central1" \
-  -H "Content-Type: application/json" \
-  -d '{"status": "deployed"}'
+region=us-central1&\
+new_status=deployed"
 ```
 
 ### Rollback to Previous Version
 
 ```bash
-curl -X POST "http://localhost:8000/v1/deployments/rollback?\
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/v1/deployments/rollback?\
 name=my-service&\
 environment=production&\
 provider=gcp&\
 cloud_account_id=my-project&\
-region=us-central1" \
-  -H "Content-Type: application/json" \
-  -d '{}'
+region=us-central1"
 ```
 
 ## Development
@@ -213,6 +269,7 @@ deployment-queue-api/
 ├── src/deployment_queue/
 │   ├── __init__.py
 │   ├── main.py           # FastAPI app and endpoints
+│   ├── auth.py           # GitHub OIDC and PAT authentication
 │   ├── models.py         # Pydantic models and enums
 │   ├── database.py       # Snowflake connection handling
 │   └── config.py         # Settings via pydantic-settings

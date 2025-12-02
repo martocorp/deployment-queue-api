@@ -9,6 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
+    # Snowflake
     snowflake_account: str
     snowflake_user: str
     snowflake_password: Optional[str] = None
@@ -17,6 +18,25 @@ class Settings(BaseSettings):
     snowflake_warehouse: str = "COMPUTE_WH"
     snowflake_database: str = "DEPLOYMENTS_DB"
     snowflake_schema: str = "PUBLIC"
+
+    # Authentication
+    auth_enabled: bool = True
+    github_oidc_issuer: str = "https://token.actions.githubusercontent.com"
+    github_oidc_audience: str = "deployment-queue-api"
+
+    # GitHub API (for CLI auth)
+    github_api_url: str = "https://api.github.com"
+    github_api_version: str = "2022-11-28"
+
+    # Optional: Restrict to specific orgs (comma-separated)
+    allowed_organisations: Optional[str] = None
+
+    # For local development with auth disabled
+    dev_organisation: str = "local-dev"
+
+    # Cache TTLs (seconds)
+    jwks_cache_ttl: int = 3600  # 1 hour
+    org_membership_cache_ttl: int = 300  # 5 minutes
 
     model_config = SettingsConfigDict(env_file=".env")
 

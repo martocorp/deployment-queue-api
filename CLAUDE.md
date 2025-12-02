@@ -24,37 +24,65 @@ make clean         # Remove build artifacts and caches
 
 This is a FastAPI REST API for tracking deployment lifecycle across cloud providers (GCP, AWS, Azure), using Snowflake as the database.
 
+### Authentication & Multi-Tenancy
+
+The API supports two authentication methods:
+
+1. **GitHub OIDC (GitHub Actions)**: JWT from GitHub Actions in `Authorization: Bearer <jwt>`. Organisation extracted from token's `repository_owner` claim.
+
+2. **GitHub PAT (CLI)**: Personal Access Token in `Authorization: Bearer <pat>` with `X-Organisation: <org>` header. Organisation verified via GitHub API membership check.
+
+- **auth.py**: Unified authentication supporting both OIDC and PAT. `verify_token()` is the FastAPI dependency that returns a `TokenPayload` with organisation and audit info.
+- **Multi-tenancy**: All database queries are automatically filtered by organisation.
+- **Tenant isolation**: Users can only access deployments belonging to their organisation.
+- **Caching**: JWKS cached for 1 hour, org membership cached for 5 minutes.
+
 ### Core Concept: Taxonomy
 
-Deployments are uniquely identified by a "taxonomy" - a combination of: `name` + `environment` + `provider` + `cloud_account_id` + `region` + `cell`. The taxonomy-based endpoints (`/current`, `/history`, `/rollback`) use this to find deployments without needing the deployment ID.
+Deployments are uniquely identified by a "taxonomy" - a combination of: `name` + `environment` + `provider` + `cloud_account_id` + `region` + `cell_id`. The taxonomy-based endpoints (`/current`, `/history`, `/rollback`) use this to find deployments without needing the deployment ID.
+
+### Deployment Lineage
+
+Deployments track their lineage for rollback traceability:
+- **trigger**: `manual`, `auto`, or `rollback`
+- **source_deployment_id**: For rollbacks, points to the deployment being restored
+- **rollback_from_deployment_id**: For rollbacks, points to the failed deployment being rolled back from
 
 ### Module Structure
 
-- **main.py**: All FastAPI endpoints. Uses `get_cursor` as a FastAPI dependency for database access. The `build_taxonomy_where_clause()` helper constructs SQL WHERE clauses for taxonomy queries.
+- **main.py**: All FastAPI endpoints. Uses `get_cursor` and `verify_token` as FastAPI dependencies. The `build_taxonomy_query()` helper constructs SQL WHERE clauses for taxonomy queries.
 
-- **models.py**: Pydantic models and enums. `row_to_deployment()` converts Snowflake rows (UPPERCASE keys) to Deployment models.
+- **auth.py**: Unified authentication supporting GitHub OIDC and PAT. Key functions:
+  - `verify_token()`: Main FastAPI dependency, auto-detects token type
+  - `_verify_github_oidc_token()`: JWT verification against GitHub's JWKS
+  - `_verify_github_pat()`: PAT verification via GitHub API with org membership check
+  - `_is_jwt_token()`: Detects JWT vs PAT format
+
+- **models.py**: Pydantic models and enums. `row_to_deployment()` converts Snowflake rows (UPPERCASE keys) to Deployment models. Includes `DeploymentTrigger` enum for lineage tracking.
 
 - **database.py**: Snowflake connection handling. `get_cursor()` is a generator that yields a DictCursor and handles commit/rollback.
 
-- **config.py**: Settings via pydantic-settings with lazy loading (`get_settings()` with `@lru_cache`).
+- **config.py**: Settings via pydantic-settings with lazy loading (`get_settings()` with `@lru_cache`). Includes auth settings: `auth_enabled`, `github_oidc_issuer`, `github_oidc_audience`, `github_api_url`, `allowed_organisations`, `jwks_cache_ttl`, `org_membership_cache_ttl`.
 
 ### Database Notes
 
 - Snowflake returns column names in UPPERCASE - use `row["COLUMN_NAME"]` when reading
 - Use parameterized queries with `%(param)s` syntax for all user input
-- NULL comparisons in SQL require `IS NULL`, not `= NULL` (see `build_taxonomy_where_clause`)
+- NULL comparisons in SQL require `IS NULL`, not `= NULL` (see `build_taxonomy_query`)
+- All queries must include `organisation = %(organisation)s` for tenant isolation
 
 ### Testing Pattern
 
-Tests use FastAPI dependency overrides to mock the database cursor:
+Tests use FastAPI dependency overrides to mock both database cursor and authentication:
 
 ```python
 def override_get_cursor():
     yield mock_cursor
 
 app.dependency_overrides[get_cursor] = override_get_cursor
+app.dependency_overrides[verify_token] = lambda: mock_token
 # ... run test ...
 app.dependency_overrides.clear()
 ```
 
-The `MockCursor` class in conftest.py simulates Snowflake's DictCursor. Mock data uses UPPERCASE keys to match Snowflake behavior.
+The `MockCursor` class in conftest.py simulates Snowflake's DictCursor. Mock data uses UPPERCASE keys to match Snowflake behavior. The `mock_token` and `mock_other_org_token` fixtures test multi-tenancy isolation.

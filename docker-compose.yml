@@ -13,6 +13,18 @@ services:
       SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE:-COMPUTE_WH}
       SNOWFLAKE_DATABASE: ${SNOWFLAKE_DATABASE:-DEPLOYMENTS_DB}
       SNOWFLAKE_SCHEMA: ${SNOWFLAKE_SCHEMA:-PUBLIC}
+      # Authentication
+      AUTH_ENABLED: ${AUTH_ENABLED:-true}
+      GITHUB_OIDC_ISSUER: ${GITHUB_OIDC_ISSUER:-https://token.actions.githubusercontent.com}
+      GITHUB_OIDC_AUDIENCE: ${GITHUB_OIDC_AUDIENCE:-deployment-queue-api}
+      # GitHub API (for CLI auth)
+      GITHUB_API_URL: ${GITHUB_API_URL:-https://api.github.com}
+      GITHUB_API_VERSION: ${GITHUB_API_VERSION:-2022-11-28}
+      ALLOWED_ORGANISATIONS: ${ALLOWED_ORGANISATIONS:-}
+      # Cache TTLs
+      JWKS_CACHE_TTL: ${JWKS_CACHE_TTL:-3600}
+      ORG_MEMBERSHIP_CACHE_TTL: ${ORG_MEMBERSHIP_CACHE_TTL:-300}
+      DEV_ORGANISATION: ${DEV_ORGANISATION:-local-dev}
     secrets:
       - snowflake_key
 

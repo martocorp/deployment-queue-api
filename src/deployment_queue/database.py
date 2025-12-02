@@ -11,9 +11,9 @@ from .config import get_settings
 
 
 def _get_connection_params() -> dict[str, Any]:
-    """Build Snowflake connection parameters."""
+    """Build Snowflake connection parameters supporting password or key-pair auth."""
     settings = get_settings()
-    params = {
+    params: dict[str, Any] = {
         "account": settings.snowflake_account,
         "user": settings.snowflake_user,
         "warehouse": settings.snowflake_warehouse,
@@ -35,9 +35,9 @@ def _get_connection_params() -> dict[str, Any]:
                 password=passphrase,
                 backend=default_backend(),
             )
-        params["private_key"] = p_key  # type: ignore[assignment]
+        params["private_key"] = p_key
     else:
-        params["password"] = settings.snowflake_password  # type: ignore[assignment]
+        params["password"] = settings.snowflake_password
 
     return params
 
@@ -53,7 +53,7 @@ def get_connection() -> Generator[SnowflakeConnection, None, None]:
 
 
 def get_cursor() -> Generator[DictCursor, None, None]:
-    """FastAPI dependency for database cursor."""
+    """FastAPI dependency for database cursor with transaction handling."""
     with get_connection() as conn:
         cursor = conn.cursor(DictCursor)
         try:
