@@ -24,6 +24,16 @@ make clean         # Remove build artifacts and caches
 
 This is a FastAPI REST API for tracking deployment lifecycle across cloud providers (GCP, AWS, Azure), using Snowflake as the database.
 
+### API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/health` | Health check (no auth required) |
+| `GET` | `/v1/deployments` | List deployments with filters |
+| `POST` | `/v1/deployments` | Create a new deployment |
+| `PATCH` | `/v1/deployments/{id}` | Update deployment status |
+| `POST` | `/v1/deployments/rollback` | Create rollback deployment |
+
 ### Authentication & Multi-Tenancy
 
 The API supports two authentication methods:
@@ -72,7 +82,7 @@ Deployments track their lineage for rollback traceability:
 
 - Snowflake returns column names in UPPERCASE - use `row["COLUMN_NAME"]` when reading
 - Use parameterized queries with `%(param)s` syntax for all user input
-- NULL comparisons in SQL require `IS NULL`, not `= NULL` (see `build_taxonomy_query`)
+- NULL comparisons in SQL require `IS NULL`, not `= NULL`
 - All queries must include `organisation = %(organisation)s` for tenant isolation
 
 ### Testing Pattern

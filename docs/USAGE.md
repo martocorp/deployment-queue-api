@@ -9,6 +9,7 @@ This document provides detailed usage instructions for the Deployment Queue API.
 - [Configuration](#configuration)
 - [Running the API](#running-the-api)
 - [Authentication](#authentication)
+- [Multi-Tenancy](#multi-tenancy)
 - [API Endpoints](#api-endpoints)
 - [Data Models](#data-models)
 - [Examples](#examples)
@@ -71,8 +72,6 @@ For key-pair authentication, place your private key at `secrets/rsa_key.p8`:
 cp /path/to/your/rsa_key.p8 secrets/rsa_key.p8
 ```
 
-For local development, you can also set `SNOWFLAKE_PRIVATE_KEY_PATH` in your `.env` file to point to the key location.
-
 ### 4. Database Setup
 
 Execute the schema in Snowflake before running the API:
@@ -80,8 +79,6 @@ Execute the schema in Snowflake before running the API:
 ```bash
 snowsql -f sql/schema.sql
 ```
-
-Or run the contents of `sql/schema.sql` in your Snowflake worksheet.
 
 ### 5. Verify Connection
 
@@ -122,14 +119,16 @@ Once running, interactive documentation is available at:
 
 ## Authentication
 
-The API supports two authentication methods:
+The API supports two authentication methods for different use cases:
 
-| Source | Auth Method | Headers |
-|--------|-------------|---------|
-| **GitHub Actions** | OIDC JWT | `Authorization: Bearer <jwt>` |
-| **CLI** | GitHub PAT | `Authorization: Bearer <pat>` + `X-Organisation: <org>` |
+| Use Case | Auth Method | Headers | Organisation Source |
+|----------|-------------|---------|---------------------|
+| **GitHub Actions** | OIDC JWT | `Authorization: Bearer <jwt>` | Extracted from JWT `repository_owner` claim |
+| **CLI / Terminal** | GitHub PAT | `Authorization: Bearer <pat>` + `X-Organisation: <org>` | `X-Organisation` header (verified via GitHub API) |
 
 ### GitHub Actions (OIDC)
+
+For automated deployments from CI/CD pipelines. The organisation is automatically extracted from the JWT token.
 
 ```yaml
 jobs:
@@ -147,19 +146,69 @@ jobs:
 
       - name: Create Deployment
         run: |
-          curl -X POST https://your-api/v1/deployments \
+          curl -X POST https://api.example.com/v1/deployments \
             -H "Authorization: Bearer ${{ steps.token.outputs.token }}" \
             -H "Content-Type: application/json" \
-            -d '{"name": "my-service", "version": "1.0.0", ...}'
+            -d '{
+              "name": "my-service",
+              "version": "${{ github.sha }}",
+              "provider": "gcp",
+              "cloud_account_id": "my-project",
+              "region": "us-central1",
+              "environment": "production",
+              "type": "k8s"
+            }'
 ```
 
-### CLI (PAT)
+### CLI / Terminal (PAT)
+
+For manual operations using `deployment-queue-cli` or direct API calls. Requires a GitHub Personal Access Token and explicit organisation header.
+
+**Requirements:**
+- GitHub PAT with `read:org` scope (to verify organisation membership)
+- User must be a member of the specified organisation
 
 ```bash
-curl -X GET "https://api.example.com/v1/deployments" \
-  -H "Authorization: Bearer ghp_xxxxxxxxxxxx" \
-  -H "X-Organisation: my-org"
+# Set environment variables
+export GITHUB_TOKEN="ghp_xxxxxxxxxxxxxxxxxxxx"
+export ORG="my-organisation"
+export API_URL="https://api.example.com"
+
+# Example API call
+curl -X GET "$API_URL/v1/deployments" \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "X-Organisation: $ORG"
 ```
+
+## Multi-Tenancy
+
+The API enforces strict multi-tenant isolation based on GitHub organisations:
+
+- **Data Isolation**: Each organisation's deployments are completely isolated
+- **Automatic Filtering**: All database queries include organisation filter
+- **No Cross-Org Access**: Users can only access deployments for organisations they belong to
+
+### Taxonomy
+
+Deployments are uniquely identified by a **taxonomy** - a combination of:
+
+| Field | Description |
+|-------|-------------|
+| `organisation` | GitHub organisation (from authentication) |
+| `name` | Component/service name |
+| `environment` | Deployment environment (e.g., production, staging) |
+| `provider` | Cloud provider (gcp, aws, azure) |
+| `cloud_account_id` | Cloud account identifier |
+| `region` | Cloud region |
+| `cell_id` | Optional cell identifier |
+
+### Auto-Skip Behavior
+
+When a deployment is marked as `deployed`, all older scheduled deployments for the **same taxonomy** are automatically marked as `skipped`. This ensures:
+
+- The deployment queue stays clean
+- Only relevant deployments remain scheduled
+- Superseded versions are properly tracked
 
 ## API Endpoints
 
@@ -188,13 +237,15 @@ Query parameters:
 - `trigger` (optional): Filter by trigger (`auto`, `manual`, `rollback`)
 - `limit` (optional): Maximum results (default: 100, max: 1000)
 
+**Note**: Results are always filtered by the authenticated organisation.
+
 ### Create Deployment
 
 ```
 POST /v1/deployments
 ```
 
-Creates a new deployment with status `scheduled`.
+Creates a new deployment with status `scheduled`. The `organisation` is set from the authentication token.
 
 ### Update Deployment
 
@@ -204,7 +255,7 @@ PATCH /v1/deployments/{deployment_id}
 
 Updatable fields: `status`, `notes`, `deployment_uri`
 
-**Auto-skip behavior**: When setting status to `deployed`, all older scheduled deployments for the same taxonomy (organisation, name, environment, provider, cloud_account_id, region, cell_id) are automatically marked as `skipped`.
+**Auto-skip behavior**: When setting status to `deployed`, all older scheduled deployments for the same taxonomy are automatically marked as `skipped`.
 
 ### Rollback Deployment
 
@@ -214,14 +265,14 @@ POST /v1/deployments/rollback
 
 Required query parameters:
 - `name`: Component name
-- `environment`: Environment (e.g., `production`, `staging`)
+- `environment`: Environment
 - `provider`: Cloud provider (`gcp`, `aws`, `azure`)
 - `cloud_account_id`: Cloud account identifier
 - `region`: Cloud region
 
 Optional:
-- `cell_id`: Cell identifier (for cell-based deployments)
-- `target_version`: Specific version to rollback to. If not provided, rolls back to the previous deployment.
+- `cell_id`: Cell identifier
+- `target_version`: Specific version to rollback to (defaults to previous deployment)
 
 Rollback creates a NEW deployment record with:
 - `trigger` set to `rollback`
@@ -252,7 +303,7 @@ Rollback creates a NEW deployment record with:
 
 #### DeploymentTrigger
 - `auto` - Automatic deployment (from CI/CD pipeline)
-- `manual` - Manual deployment
+- `manual` - Manual deployment (auto=false)
 - `rollback` - Rollback deployment
 
 ### Deployment Fields
@@ -289,87 +340,141 @@ Rollback creates a NEW deployment record with:
 
 ## Examples
 
-All examples require authentication headers as described in the [Authentication](#authentication) section.
+### GitHub Actions Examples
 
-### Create a Kubernetes Deployment
+These examples are for use in GitHub Actions workflows with OIDC authentication.
+
+#### Create Deployment in GitHub Actions
+
+```yaml
+- name: Create Deployment
+  run: |
+    curl -X POST $API_URL/v1/deployments \
+      -H "Authorization: Bearer ${{ steps.token.outputs.token }}" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "name": "user-service",
+        "version": "${{ github.sha }}",
+        "commit_sha": "${{ github.sha }}",
+        "provider": "gcp",
+        "cloud_account_id": "my-gcp-project",
+        "region": "us-central1",
+        "environment": "production",
+        "type": "k8s",
+        "build_uri": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      }'
+```
+
+#### Update Status After Deployment
+
+```yaml
+- name: Mark Deployment as Deployed
+  run: |
+    curl -X PATCH $API_URL/v1/deployments/$DEPLOYMENT_ID \
+      -H "Authorization: Bearer ${{ steps.token.outputs.token }}" \
+      -H "Content-Type: application/json" \
+      -d '{"status": "deployed"}'
+```
+
+### CLI Examples
+
+These examples are for use in a terminal with GitHub PAT authentication.
+
+#### Setup
 
 ```bash
-curl -X POST http://localhost:8000/v1/deployments \
-  -H "Authorization: Bearer $TOKEN" \
+# Set environment variables for CLI usage
+export GITHUB_TOKEN="ghp_xxxxxxxxxxxxxxxxxxxx"
+export ORG="my-organisation"
+export API_URL="https://api.example.com"
+```
+
+#### List Scheduled Deployments
+
+```bash
+curl -X GET "$API_URL/v1/deployments?status=scheduled" \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "X-Organisation: $ORG"
+```
+
+#### List Deployments by Taxonomy
+
+```bash
+curl -X GET "$API_URL/v1/deployments?\
+name=user-service&\
+environment=production&\
+provider=gcp&\
+cloud_account_id=my-gcp-project&\
+region=us-central1" \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "X-Organisation: $ORG"
+```
+
+#### Create a Deployment
+
+```bash
+curl -X POST "$API_URL/v1/deployments" \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "X-Organisation: $ORG" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "user-service",
     "version": "2.1.0",
-    "commit_sha": "abc123def456",
     "provider": "gcp",
     "cloud_account_id": "my-gcp-project",
     "region": "us-central1",
     "environment": "production",
     "type": "k8s",
-    "description": "User service v2.1.0 with new auth flow"
+    "auto": false,
+    "description": "Manual deployment for hotfix"
   }'
 ```
 
-### List Scheduled Deployments
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8000/v1/deployments?status=scheduled"
-```
-
-### List Deployments by Taxonomy
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8000/v1/deployments?\
-name=user-service&\
-environment=production&\
-provider=gcp&\
-cloud_account_id=my-gcp-project&\
-region=us-central1"
-```
-
-### Update Deployment Status to Deployed
+#### Update Deployment Status to Deployed
 
 When marked as deployed, older scheduled deployments for the same taxonomy are automatically skipped.
 
 ```bash
-curl -X PATCH http://localhost:8000/v1/deployments/abc-123-def \
-  -H "Authorization: Bearer $TOKEN" \
+curl -X PATCH "$API_URL/v1/deployments/abc-123-def" \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "X-Organisation: $ORG" \
   -H "Content-Type: application/json" \
   -d '{"status": "deployed"}'
 ```
 
-### Mark Deployment as Failed
+#### Mark Deployment as Failed
 
 ```bash
-curl -X PATCH http://localhost:8000/v1/deployments/abc-123-def \
-  -H "Authorization: Bearer $TOKEN" \
+curl -X PATCH "$API_URL/v1/deployments/abc-123-def" \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "X-Organisation: $ORG" \
   -H "Content-Type: application/json" \
   -d '{"status": "failed", "notes": "Database migration failed"}'
 ```
 
-### Rollback to Previous Version
+#### Rollback to Previous Version
 
 ```bash
-curl -X POST -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8000/v1/deployments/rollback?\
+curl -X POST "$API_URL/v1/deployments/rollback?\
 name=user-service&\
 environment=production&\
 provider=gcp&\
 cloud_account_id=my-gcp-project&\
-region=us-central1"
+region=us-central1" \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "X-Organisation: $ORG"
 ```
 
-### Rollback to Specific Version
+#### Rollback to Specific Version
 
 ```bash
-curl -X POST -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8000/v1/deployments/rollback?\
+curl -X POST "$API_URL/v1/deployments/rollback?\
 name=user-service&\
 environment=production&\
 provider=gcp&\
 cloud_account_id=my-gcp-project&\
 region=us-central1&\
-target_version=1.9.5"
+target_version=1.9.5" \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "X-Organisation: $ORG"
 ```
