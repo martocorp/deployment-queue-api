@@ -26,48 +26,6 @@ app = FastAPI(
 )
 
 
-def build_taxonomy_query(
-    base_query: str,
-    params: dict[str, Any],
-    name: str,
-    environment: str,
-    provider: Provider,
-    cloud_account_id: str,
-    region: str,
-    cell_id: Optional[str],
-    organisation: str,
-) -> tuple[str, dict[str, Any]]:
-    """
-    Build query with taxonomy filters.
-
-    SECURITY: Organisation comes from token, never from user input.
-    """
-    query = base_query + """
-        WHERE organisation = %(organisation)s
-          AND name = %(name)s
-          AND environment = %(environment)s
-          AND provider = %(provider)s
-          AND cloud_account_id = %(cloud_account_id)s
-          AND region = %(region)s
-    """  # nosec B608 - query built with hardcoded strings and parameterized values
-    params.update({
-        "organisation": organisation,
-        "name": name,
-        "environment": environment,
-        "provider": provider.value,
-        "cloud_account_id": cloud_account_id,
-        "region": region,
-    })
-
-    if cell_id:
-        query += " AND cell_id = %(cell_id)s"
-        params["cell_id"] = cell_id
-    else:
-        query += " AND cell_id IS NULL"
-
-    return query, params
-
-
 # -----------------------------------------------------------------------------
 # Health check (no auth required)
 # -----------------------------------------------------------------------------
@@ -80,33 +38,53 @@ def health_check() -> dict[str, str]:
 
 
 # -----------------------------------------------------------------------------
-# Basic CRUD - all scoped to token.organisation
+# Deployments API
 # -----------------------------------------------------------------------------
 
 
 @app.get("/v1/deployments", response_model=list[Deployment])
 async def list_deployments(
     deployment_status: Optional[DeploymentStatus] = Query(default=None, alias="status"),
+    name: Optional[str] = None,
     environment: Optional[str] = None,
     provider: Optional[Provider] = None,
+    cloud_account_id: Optional[str] = None,
+    region: Optional[str] = None,
+    cell_id: Optional[str] = None,
     trigger: Optional[DeploymentTrigger] = None,
     limit: int = Query(default=100, le=1000),
     cursor: DictCursor = Depends(get_cursor),
     token: TokenPayload = Depends(verify_token),
 ) -> list[Deployment]:
-    """List deployments for the authenticated organisation."""
+    """
+    List deployments for the authenticated organisation.
+
+    Filter by status=scheduled to get the deployment queue.
+    """
     query = "SELECT * FROM deployments WHERE organisation = %(organisation)s"
     params: dict[str, Any] = {"organisation": token.organisation, "limit": limit}
 
     if deployment_status:
         query += " AND status = %(status)s"
         params["status"] = deployment_status.value
+    if name:
+        query += " AND name = %(name)s"
+        params["name"] = name
     if environment:
         query += " AND environment = %(environment)s"
         params["environment"] = environment
     if provider:
         query += " AND provider = %(provider)s"
         params["provider"] = provider.value
+    if cloud_account_id:
+        query += " AND cloud_account_id = %(cloud_account_id)s"
+        params["cloud_account_id"] = cloud_account_id
+    if region:
+        query += " AND region = %(region)s"
+        params["region"] = region
+    if cell_id:
+        query += " AND cell_id = %(cell_id)s"
+        params["cell_id"] = cell_id
     if trigger:
         query += " AND trigger = %(trigger)s"
         params["trigger"] = trigger.value
@@ -189,109 +167,107 @@ async def create_deployment(
     return row_to_deployment(cursor.fetchone())  # type: ignore[arg-type]
 
 
-@app.get("/v1/deployments/current", response_model=Optional[Deployment])
-async def get_current_deployment(
-    name: str = Query(...),
-    environment: str = Query(...),
-    provider: Provider = Query(...),
-    cloud_account_id: str = Query(...),
-    region: str = Query(...),
-    cell_id: Optional[str] = Query(default=None),
-    cursor: DictCursor = Depends(get_cursor),
-    token: TokenPayload = Depends(verify_token),
-) -> Optional[Deployment]:
-    """Get the current (most recent) deployment for a component by taxonomy."""
-    query, params = build_taxonomy_query(
-        "SELECT * FROM deployments",
-        {},
-        name, environment, provider, cloud_account_id, region, cell_id,
-        token.organisation,
-    )
-    query += " ORDER BY created_at DESC LIMIT 1"
-
-    cursor.execute(query, params)
-    row = cursor.fetchone()
-    return row_to_deployment(row) if row else None
-
-
-@app.patch("/v1/deployments/current/status", response_model=Deployment)
-async def update_deployment_status_by_taxonomy(
-    name: str = Query(...),
-    environment: str = Query(...),
-    provider: Provider = Query(...),
-    cloud_account_id: str = Query(...),
-    region: str = Query(...),
-    new_status: DeploymentStatus = Query(...),
-    cell_id: Optional[str] = Query(default=None),
-    notes: Optional[str] = Query(default=None),
-    deployment_uri: Optional[str] = Query(default=None),
+@app.patch("/v1/deployments/{deployment_id}", response_model=Deployment)
+async def update_deployment(
+    deployment_id: str,
+    update: DeploymentUpdate,
     cursor: DictCursor = Depends(get_cursor),
     token: TokenPayload = Depends(verify_token),
 ) -> Deployment:
-    """Update the status of the current deployment by taxonomy."""
-    query, params = build_taxonomy_query(
-        "SELECT id FROM deployments",
-        {},
-        name, environment, provider, cloud_account_id, region, cell_id,
-        token.organisation,
+    """
+    Update a deployment by ID (must belong to authenticated organisation).
+
+    When setting status to 'deployed', all older scheduled deployments for the
+    same taxonomy (name, environment, provider, cloud_account_id, region, cell_id)
+    will be automatically marked as 'skipped'.
+    """
+    # Fetch the deployment to update
+    cursor.execute(
+        "SELECT * FROM deployments WHERE id = %(id)s AND organisation = %(organisation)s",
+        {"id": deployment_id, "organisation": token.organisation},
     )
-    query += " ORDER BY created_at DESC LIMIT 1"
+    deployment_row = cursor.fetchone()
+    if not deployment_row:
+        raise HTTPException(status_code=404, detail="Deployment not found")
 
-    cursor.execute(query, params)
-    row = cursor.fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="No deployment found for this taxonomy")
+    update_data = update.model_dump(exclude_unset=True)
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
 
-    deployment_id = row["ID"]
     now = datetime.now(UTC)
 
-    update_fields: dict[str, Any] = {"status": new_status.value, "updated_at": now}
-    if notes:
-        update_fields["notes"] = notes
-    if deployment_uri:
-        update_fields["deployment_uri"] = deployment_uri
+    # Convert status enum to value if present
+    new_status = None
+    if "status" in update_data and update_data["status"]:
+        new_status = update_data["status"]
+        update_data["status"] = new_status.value
 
-    set_clause = ", ".join(f"{k} = %({k})s" for k in update_fields.keys())
-    update_fields["id"] = deployment_id
+    update_data["updated_at"] = now
+    set_clause = ", ".join(f"{k} = %({k})s" for k in update_data.keys())
+    update_data["id"] = deployment_id
 
     cursor.execute(
         f"UPDATE deployments SET {set_clause} WHERE id = %(id)s",  # nosec B608
-        update_fields
+        update_data
     )
+
+    # Auto-skip older scheduled deployments when marking as deployed
+    if new_status == DeploymentStatus.deployed:
+        _skip_older_scheduled_deployments(cursor, deployment_row, now)
 
     cursor.execute("SELECT * FROM deployments WHERE id = %(id)s", {"id": deployment_id})
     return row_to_deployment(cursor.fetchone())  # type: ignore[arg-type]
 
 
-@app.get("/v1/deployments/history", response_model=list[Deployment])
-async def get_deployment_history(
-    name: str = Query(...),
-    environment: str = Query(...),
-    provider: Provider = Query(...),
-    cloud_account_id: str = Query(...),
-    region: str = Query(...),
-    cell_id: Optional[str] = Query(default=None),
-    limit: int = Query(default=10, le=500),
-    cursor: DictCursor = Depends(get_cursor),
-    token: TokenPayload = Depends(verify_token),
-) -> list[Deployment]:
+def _skip_older_scheduled_deployments(
+    cursor: DictCursor,
+    deployed_row: dict,
+    now: datetime,
+) -> None:
     """
-    Get deployment history for a component by taxonomy.
+    Mark older scheduled deployments as skipped.
 
-    Returns deployments in reverse chronological order with full lineage info.
-    Use trigger, source_deployment_id, and rollback_from_deployment_id to
-    trace the deployment chain.
+    When a deployment is marked as 'deployed', any scheduled deployments
+    for the same taxonomy that were created BEFORE this deployment should
+    be skipped (they're now outdated).
     """
-    query, params = build_taxonomy_query(
-        "SELECT * FROM deployments",
-        {"limit": limit},
-        name, environment, provider, cloud_account_id, region, cell_id,
-        token.organisation,
-    )
-    query += " ORDER BY created_at DESC LIMIT %(limit)s"
+    # Build the taxonomy match condition
+    # nosec B608 - query built with hardcoded strings and parameterized values
+    skip_query = """
+        UPDATE deployments
+        SET status = 'skipped', updated_at = %(now)s
+        WHERE organisation = %(organisation)s
+          AND name = %(name)s
+          AND environment = %(environment)s
+          AND provider = %(provider)s
+          AND cloud_account_id = %(cloud_account_id)s
+          AND region = %(region)s
+          AND status = 'scheduled'
+          AND created_at < %(created_at)s
+          AND id != %(id)s
+    """
 
-    cursor.execute(query, params)
-    return [row_to_deployment(row) for row in cursor.fetchall()]
+    params: dict[str, Any] = {
+        "now": now,
+        "organisation": deployed_row["ORGANISATION"],
+        "name": deployed_row["NAME"],
+        "environment": deployed_row["ENVIRONMENT"],
+        "provider": deployed_row["PROVIDER"],
+        "cloud_account_id": deployed_row["CLOUD_ACCOUNT_ID"],
+        "region": deployed_row["REGION"],
+        "created_at": deployed_row["CREATED_AT"],
+        "id": deployed_row["ID"],
+    }
+
+    # Handle cell_id NULL comparison
+    cell_id = deployed_row.get("CELL_ID")
+    if cell_id:
+        skip_query += " AND cell_id = %(cell_id)s"
+        params["cell_id"] = cell_id
+    else:
+        skip_query += " AND cell_id IS NULL"
+
+    cursor.execute(skip_query, params)
 
 
 @app.post(
@@ -319,50 +295,47 @@ async def rollback_deployment(
     If target_version is provided, rolls back to that specific version.
     Otherwise, rolls back to the previous deployment.
     """
-    # Find current deployment (the one we're rolling back FROM)
-    query, params = build_taxonomy_query(
-        "SELECT * FROM deployments",
-        {},
-        name, environment, provider, cloud_account_id, region, cell_id,
-        token.organisation,
-    )
-    query += " ORDER BY created_at DESC LIMIT 1"
+    # Build taxonomy filter
+    base_query = "SELECT * FROM deployments WHERE organisation = %(organisation)s"
+    base_query += " AND name = %(name)s AND environment = %(environment)s"
+    base_query += " AND provider = %(provider)s AND cloud_account_id = %(cloud_account_id)s"
+    base_query += " AND region = %(region)s"
 
-    cursor.execute(query, params)
+    base_params: dict[str, Any] = {
+        "organisation": token.organisation,
+        "name": name,
+        "environment": environment,
+        "provider": provider.value,
+        "cloud_account_id": cloud_account_id,
+        "region": region,
+    }
+
+    if cell_id:
+        base_query += " AND cell_id = %(cell_id)s"
+        base_params["cell_id"] = cell_id
+    else:
+        base_query += " AND cell_id IS NULL"
+
+    # Find current deployment (the one we're rolling back FROM)
+    cursor.execute(base_query + " ORDER BY created_at DESC LIMIT 1", base_params)
     current_deployment = cursor.fetchone()
     rollback_from_id = current_deployment["ID"] if current_deployment else None
 
     # Find the deployment to rollback TO (source)
     if target_version:
-        query, params = build_taxonomy_query(
-            "SELECT * FROM deployments",
-            {},
-            name, environment, provider, cloud_account_id, region, cell_id,
-            token.organisation,
-        )
-        query += " AND version = %(version)s ORDER BY created_at DESC LIMIT 1"
-        params["version"] = target_version
+        version_query = base_query + " AND version = %(version)s ORDER BY created_at DESC LIMIT 1"
+        version_params = {**base_params, "version": target_version}
+        cursor.execute(version_query, version_params)
+        rollback_source = cursor.fetchone()
 
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
-
-        if not rows:
+        if not rollback_source:
             raise HTTPException(
                 status_code=404,
                 detail=f"No deployment found with version {target_version}",
             )
-        rollback_source = rows[0]
     else:
         # Get second most recent
-        query, params = build_taxonomy_query(
-            "SELECT * FROM deployments",
-            {},
-            name, environment, provider, cloud_account_id, region, cell_id,
-            token.organisation,
-        )
-        query += " ORDER BY created_at DESC LIMIT 2"
-
-        cursor.execute(query, params)
+        cursor.execute(base_query + " ORDER BY created_at DESC LIMIT 2", base_params)
         rows = cursor.fetchall()
 
         if len(rows) < 2:
@@ -427,59 +400,6 @@ async def rollback_deployment(
             "created_by_workflow": token.workflow,
             "created_by_actor": token.actor,
         },
-    )
-
-    cursor.execute("SELECT * FROM deployments WHERE id = %(id)s", {"id": deployment_id})
-    return row_to_deployment(cursor.fetchone())  # type: ignore[arg-type]
-
-
-@app.get("/v1/deployments/{deployment_id}", response_model=Deployment)
-async def get_deployment(
-    deployment_id: str,
-    cursor: DictCursor = Depends(get_cursor),
-    token: TokenPayload = Depends(verify_token),
-) -> Deployment:
-    """Get a deployment by ID (must belong to authenticated organisation)."""
-    cursor.execute(
-        "SELECT * FROM deployments WHERE id = %(id)s AND organisation = %(organisation)s",
-        {"id": deployment_id, "organisation": token.organisation},
-    )
-    row = cursor.fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Deployment not found")
-    return row_to_deployment(row)
-
-
-@app.patch("/v1/deployments/{deployment_id}", response_model=Deployment)
-async def update_deployment(
-    deployment_id: str,
-    update: DeploymentUpdate,
-    cursor: DictCursor = Depends(get_cursor),
-    token: TokenPayload = Depends(verify_token),
-) -> Deployment:
-    """Update a deployment by ID (must belong to authenticated organisation)."""
-    cursor.execute(
-        "SELECT id FROM deployments WHERE id = %(id)s AND organisation = %(organisation)s",
-        {"id": deployment_id, "organisation": token.organisation},
-    )
-    if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Deployment not found")
-
-    update_data = update.model_dump(exclude_unset=True)
-    if not update_data:
-        raise HTTPException(status_code=400, detail="No fields to update")
-
-    # Convert status enum to value if present
-    if "status" in update_data and update_data["status"]:
-        update_data["status"] = update_data["status"].value
-
-    update_data["updated_at"] = datetime.now(UTC)
-    set_clause = ", ".join(f"{k} = %({k})s" for k in update_data.keys())
-    update_data["id"] = deployment_id
-
-    cursor.execute(
-        f"UPDATE deployments SET {set_clause} WHERE id = %(id)s",  # nosec B608
-        update_data
     )
 
     cursor.execute("SELECT * FROM deployments WHERE id = %(id)s", {"id": deployment_id})

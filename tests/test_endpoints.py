@@ -181,6 +181,28 @@ class TestListDeployments:
         assert response.status_code == 200
         assert "trigger = %(trigger)s" in mock_cursor_single.executed_queries[0]
 
+    def test_list_deployments_filter_by_taxonomy(
+        self, mock_cursor_single: MockCursor, client: TestClient
+    ) -> None:
+        """Can filter by full taxonomy fields."""
+        response = client.get(
+            "/v1/deployments",
+            params={
+                "name": "test-service",
+                "environment": "production",
+                "provider": "gcp",
+                "cloud_account_id": "project-123",
+                "region": "us-central1",
+            },
+        )
+        assert response.status_code == 200
+        query = mock_cursor_single.executed_queries[0]
+        assert "name = %(name)s" in query
+        assert "environment = %(environment)s" in query
+        assert "provider = %(provider)s" in query
+        assert "cloud_account_id = %(cloud_account_id)s" in query
+        assert "region = %(region)s" in query
+
     def test_list_deployments_isolated(
         self,
         mock_token: TokenPayload,
@@ -203,44 +225,6 @@ class TestListDeployments:
                 params = mock.executed_params[0]
                 assert params is not None
                 assert params["organisation"] == "other-org"
-        finally:
-            app.dependency_overrides.clear()
-
-
-class TestGetDeployment:
-    """Tests for GET /v1/deployments/{id} endpoint."""
-
-    def test_get_deployment(
-        self, mock_cursor_single: MockCursor, client: TestClient
-    ) -> None:
-        response = client.get("/v1/deployments/test-uuid")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["id"] == "test-uuid"
-
-    def test_get_deployment_not_found(
-        self, mock_cursor_empty: MockCursor, client: TestClient
-    ) -> None:
-        response = client.get("/v1/deployments/nonexistent")
-        assert response.status_code == 404
-
-    def test_get_deployment_wrong_org(
-        self,
-        mock_other_org_token: TokenPayload,
-    ) -> None:
-        """Deployment from other org returns 404."""
-        mock = MockCursor([create_mock_deployment_row(organisation="test-org")])
-
-        def override_get_cursor() -> Generator[MockCursor, None, None]:
-            yield mock
-
-        app.dependency_overrides[get_cursor] = override_get_cursor
-        app.dependency_overrides[verify_token] = lambda: mock_other_org_token
-
-        try:
-            with TestClient(app) as client:
-                client.get("/v1/deployments/test-uuid")
-                assert "organisation = %(organisation)s" in mock.executed_queries[0]
         finally:
             app.dependency_overrides.clear()
 
@@ -288,70 +272,13 @@ class TestUpdateDeployment:
         assert response.status_code == 400
         assert "No fields to update" in response.json()["detail"]
 
-
-class TestGetCurrentDeployment:
-    """Tests for GET /v1/deployments/current endpoint."""
-
-    def test_get_current_deployment(
-        self, mock_cursor_single: MockCursor, client: TestClient
-    ) -> None:
-        response = client.get(
-            "/v1/deployments/current",
-            params={
-                "name": "test-service",
-                "environment": "production",
-                "provider": "gcp",
-                "cloud_account_id": "project-123",
-                "region": "us-central1",
-            },
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert data["name"] == "test-service"
-
-    def test_get_current_deployment_with_cell(
-        self, mock_cursor_single: MockCursor, client: TestClient
-    ) -> None:
-        response = client.get(
-            "/v1/deployments/current",
-            params={
-                "name": "test-service",
-                "environment": "production",
-                "provider": "gcp",
-                "cloud_account_id": "project-123",
-                "region": "us-central1",
-                "cell_id": "cell-1",
-            },
-        )
-        assert response.status_code == 200
-        assert "cell_id = %(cell_id)s" in mock_cursor_single.executed_queries[0]
-
-    def test_get_current_deployment_not_found(
-        self, mock_cursor_empty: MockCursor, client: TestClient
-    ) -> None:
-        response = client.get(
-            "/v1/deployments/current",
-            params={
-                "name": "test-service",
-                "environment": "production",
-                "provider": "gcp",
-                "cloud_account_id": "project-123",
-                "region": "us-central1",
-            },
-        )
-        assert response.status_code == 200
-        assert response.json() is None
-
-
-class TestUpdateStatusByTaxonomy:
-    """Tests for PATCH /v1/deployments/current/status endpoint."""
-
-    def test_update_status_by_taxonomy(
+    def test_update_deployment_skips_older_when_deployed(
         self, mock_token: TokenPayload
     ) -> None:
+        """When marked as deployed, older scheduled deployments are skipped."""
         mock = MockCursor([
-            create_mock_deployment_row(),
-            create_mock_deployment_row(status="deployed"),
+            create_mock_deployment_row(),  # SELECT * to get full row
+            create_mock_deployment_row(status="deployed"),  # Final SELECT
         ])
 
         def override_get_cursor() -> Generator[MockCursor, None, None]:
@@ -363,72 +290,50 @@ class TestUpdateStatusByTaxonomy:
         try:
             with TestClient(app) as client:
                 response = client.patch(
-                    "/v1/deployments/current/status",
-                    params={
-                        "name": "test-service",
-                        "environment": "production",
-                        "provider": "gcp",
-                        "cloud_account_id": "project-123",
-                        "region": "us-central1",
-                        "new_status": "deployed",
-                    },
+                    "/v1/deployments/test-uuid",
+                    json={"status": "deployed"},
                 )
                 assert response.status_code == 200
+                # Verify skip query was executed (3rd query after SELECT *, UPDATE)
+                assert len(mock.executed_queries) >= 3
+                skip_query = mock.executed_queries[2]
+                assert "UPDATE deployments" in skip_query
+                assert "status = 'skipped'" in skip_query
+                assert "created_at <" in skip_query
         finally:
             app.dependency_overrides.clear()
 
-    def test_update_status_not_found(
-        self, mock_cursor_empty: MockCursor, client: TestClient
+    def test_update_deployment_no_skip_when_failed(
+        self, mock_token: TokenPayload
     ) -> None:
-        response = client.patch(
-            "/v1/deployments/current/status",
-            params={
-                "name": "test-service",
-                "environment": "production",
-                "provider": "gcp",
-                "cloud_account_id": "project-123",
-                "region": "us-central1",
-                "new_status": "deployed",
-            },
-        )
-        assert response.status_code == 404
+        """When marked as failed, older deployments are NOT skipped."""
+        mock = MockCursor([
+            create_mock_deployment_row(),
+            create_mock_deployment_row(status="failed"),
+        ])
 
+        def override_get_cursor() -> Generator[MockCursor, None, None]:
+            yield mock
 
-class TestDeploymentHistory:
-    """Tests for GET /v1/deployments/history endpoint."""
+        app.dependency_overrides[get_cursor] = override_get_cursor
+        app.dependency_overrides[verify_token] = lambda: mock_token
 
-    def test_deployment_history(
-        self, mock_cursor_multiple: MockCursor, client: TestClient
-    ) -> None:
-        response = client.get(
-            "/v1/deployments/history",
-            params={
-                "name": "test-service",
-                "environment": "production",
-                "provider": "gcp",
-                "cloud_account_id": "project-123",
-                "region": "us-central1",
-            },
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert len(data) == 3
-
-    def test_deployment_history_empty(
-        self, mock_cursor_empty: MockCursor, client: TestClient
-    ) -> None:
-        response = client.get(
-            "/v1/deployments/history",
-            params={
-                "name": "test-service",
-                "environment": "production",
-                "provider": "gcp",
-                "cloud_account_id": "project-123",
-                "region": "us-central1",
-            },
-        )
-        assert response.status_code == 200
-        assert response.json() == []
+        try:
+            with TestClient(app) as client:
+                response = client.patch(
+                    "/v1/deployments/test-uuid",
+                    json={"status": "failed"},
+                )
+                assert response.status_code == 200
+                # Only 3 queries: SELECT *, UPDATE, SELECT *
+                # No skip query because status is not 'deployed'
+                assert len(mock.executed_queries) == 3
+                # Verify no skip query (UPDATE with 'skipped')
+                for query in mock.executed_queries:
+                    if "UPDATE" in query and "skipped" in query:
+                        raise AssertionError("Skip query should not be executed for failed status")
+        finally:
+            app.dependency_overrides.clear()
 
 
 class TestRollback:

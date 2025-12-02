@@ -39,7 +39,11 @@ The API supports two authentication methods:
 
 ### Core Concept: Taxonomy
 
-Deployments are uniquely identified by a "taxonomy" - a combination of: `name` + `environment` + `provider` + `cloud_account_id` + `region` + `cell_id`. The taxonomy-based endpoints (`/current`, `/history`, `/rollback`) use this to find deployments without needing the deployment ID.
+Deployments are uniquely identified by a "taxonomy" - a combination of: `organisation` + `name` + `environment` + `provider` + `cloud_account_id` + `region` + `cell_id`. The `list_deployments` endpoint supports filtering by any combination of these fields (organisation is always from the token).
+
+### Auto-Skip Behavior
+
+When a deployment is marked as `deployed`, all older scheduled deployments for the same taxonomy are automatically marked as `skipped`. This happens in `_skip_older_scheduled_deployments()` and ensures the deployment queue stays clean.
 
 ### Deployment Lineage
 
@@ -50,7 +54,7 @@ Deployments track their lineage for rollback traceability:
 
 ### Module Structure
 
-- **main.py**: All FastAPI endpoints. Uses `get_cursor` and `verify_token` as FastAPI dependencies. The `build_taxonomy_query()` helper constructs SQL WHERE clauses for taxonomy queries.
+- **main.py**: All FastAPI endpoints. Uses `get_cursor` and `verify_token` as FastAPI dependencies. Key endpoints: `list_deployments` (with taxonomy filters), `create_deployment`, `update_deployment` (with auto-skip logic), and `rollback_deployment`.
 
 - **auth.py**: Unified authentication supporting GitHub OIDC and PAT. Key functions:
   - `verify_token()`: Main FastAPI dependency, auto-detects token type

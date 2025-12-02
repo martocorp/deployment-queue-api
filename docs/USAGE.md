@@ -8,6 +8,7 @@ This document provides detailed usage instructions for the Deployment Queue API.
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Running the API](#running-the-api)
+- [Authentication](#authentication)
 - [API Endpoints](#api-endpoints)
 - [Data Models](#data-models)
 - [Examples](#examples)
@@ -55,6 +56,10 @@ cp .env.example .env
 | `SNOWFLAKE_WAREHOUSE` | No | `COMPUTE_WH` | Snowflake warehouse name |
 | `SNOWFLAKE_DATABASE` | No | `DEPLOYMENTS_DB` | Snowflake database name |
 | `SNOWFLAKE_SCHEMA` | No | `PUBLIC` | Snowflake schema name |
+| `AUTH_ENABLED` | No | `true` | Enable/disable authentication |
+| `GITHUB_OIDC_ISSUER` | No | `https://token.actions.githubusercontent.com` | GitHub OIDC issuer URL |
+| `GITHUB_OIDC_AUDIENCE` | No | `deployment-queue-api` | Expected audience in OIDC token |
+| `ALLOWED_ORGANISATIONS` | No | - | Comma-separated list of allowed orgs (empty = all allowed) |
 
 *Either `SNOWFLAKE_PRIVATE_KEY_PATH` or `SNOWFLAKE_PASSWORD` must be provided.
 
@@ -115,6 +120,47 @@ Once running, interactive documentation is available at:
 - **Swagger UI**: `http://localhost:8000/docs`
 - **ReDoc**: `http://localhost:8000/redoc`
 
+## Authentication
+
+The API supports two authentication methods:
+
+| Source | Auth Method | Headers |
+|--------|-------------|---------|
+| **GitHub Actions** | OIDC JWT | `Authorization: Bearer <jwt>` |
+| **CLI** | GitHub PAT | `Authorization: Bearer <pat>` + `X-Organisation: <org>` |
+
+### GitHub Actions (OIDC)
+
+```yaml
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Required for OIDC
+    steps:
+      - name: Get OIDC Token
+        id: token
+        run: |
+          TOKEN=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=deployment-queue-api" | jq -r '.value')
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
+      - name: Create Deployment
+        run: |
+          curl -X POST https://your-api/v1/deployments \
+            -H "Authorization: Bearer ${{ steps.token.outputs.token }}" \
+            -H "Content-Type: application/json" \
+            -d '{"name": "my-service", "version": "1.0.0", ...}'
+```
+
+### CLI (PAT)
+
+```bash
+curl -X GET "https://api.example.com/v1/deployments" \
+  -H "Authorization: Bearer ghp_xxxxxxxxxxxx" \
+  -H "X-Organisation: my-org"
+```
+
 ## API Endpoints
 
 ### Health Check
@@ -123,11 +169,9 @@ Once running, interactive documentation is available at:
 GET /health
 ```
 
-Returns `{"status": "healthy"}` when the API is running.
+Returns `{"status": "healthy"}` when the API is running. No authentication required.
 
-### Basic CRUD Operations
-
-#### List Deployments
+### List Deployments
 
 ```
 GET /v1/deployments
@@ -135,11 +179,16 @@ GET /v1/deployments
 
 Query parameters:
 - `status` (optional): Filter by status (`scheduled`, `in_progress`, `deployed`, `skipped`, `failed`)
+- `name` (optional): Filter by component name
 - `environment` (optional): Filter by environment
 - `provider` (optional): Filter by provider (`gcp`, `aws`, `azure`)
+- `cloud_account_id` (optional): Filter by cloud account
+- `region` (optional): Filter by region
+- `cell_id` (optional): Filter by cell
+- `trigger` (optional): Filter by trigger (`auto`, `manual`, `rollback`)
 - `limit` (optional): Maximum results (default: 100, max: 1000)
 
-#### Create Deployment
+### Create Deployment
 
 ```
 POST /v1/deployments
@@ -147,13 +196,7 @@ POST /v1/deployments
 
 Creates a new deployment with status `scheduled`.
 
-#### Get Deployment by ID
-
-```
-GET /v1/deployments/{deployment_id}
-```
-
-#### Update Deployment by ID
+### Update Deployment
 
 ```
 PATCH /v1/deployments/{deployment_id}
@@ -161,54 +204,29 @@ PATCH /v1/deployments/{deployment_id}
 
 Updatable fields: `status`, `notes`, `deployment_uri`
 
-### Taxonomy-Based Operations
+**Auto-skip behavior**: When setting status to `deployed`, all older scheduled deployments for the same taxonomy (organisation, name, environment, provider, cloud_account_id, region, cell_id) are automatically marked as `skipped`.
 
-Taxonomy identifies a unique deployment target using: `name` + `environment` + `provider` + `cloud_account_id` + `region` + `cell`
-
-#### Get Current Deployment
+### Rollback Deployment
 
 ```
-GET /v1/deployments/current
+POST /v1/deployments/rollback
 ```
 
 Required query parameters:
 - `name`: Component name
 - `environment`: Environment (e.g., `production`, `staging`)
 - `provider`: Cloud provider (`gcp`, `aws`, `azure`)
-- `cloud_account_id`: GCP project / AWS account / Azure subscription
+- `cloud_account_id`: Cloud account identifier
 - `region`: Cloud region
 
 Optional:
-- `cell`: Cell identifier (for cell-based deployments)
-
-#### Update Current Deployment Status
-
-```
-PATCH /v1/deployments/current/status
-```
-
-Same query parameters as above, plus request body with `status`.
-
-#### Get Deployment History
-
-```
-GET /v1/deployments/history
-```
-
-Same query parameters as above, plus optional `limit` (default: 50, max: 500).
-
-#### Rollback Deployment
-
-```
-POST /v1/deployments/rollback
-```
-
-Same query parameters as above. Request body:
-- `target_version` (optional): Specific version to rollback to. If not provided, rolls back to the second most recent deployment.
+- `cell_id`: Cell identifier (for cell-based deployments)
+- `target_version`: Specific version to rollback to. If not provided, rolls back to the previous deployment.
 
 Rollback creates a NEW deployment record with:
-- `auto` set to `False`
-- A rollback note appended to `notes`
+- `trigger` set to `rollback`
+- `source_deployment_id` referencing the deployment being copied
+- `rollback_from_deployment_id` referencing the current deployment being replaced
 - Status set to `scheduled`
 
 ## Data Models
@@ -229,8 +247,13 @@ Rollback creates a NEW deployment record with:
 - `scheduled` - Deployment is queued
 - `in_progress` - Deployment is running
 - `deployed` - Deployment completed successfully
-- `skipped` - Deployment was skipped
+- `skipped` - Deployment was skipped (superseded or manually skipped)
 - `failed` - Deployment failed
+
+#### DeploymentTrigger
+- `auto` - Automatic deployment (from CI/CD pipeline)
+- `manual` - Manual deployment
+- `rollback` - Rollback deployment
 
 ### Deployment Fields
 
@@ -239,30 +262,40 @@ Rollback creates a NEW deployment record with:
 | `id` | string | Auto | UUID generated on creation |
 | `created_at` | datetime | Auto | Timestamp of creation |
 | `updated_at` | datetime | Auto | Timestamp of last update |
+| `organisation` | string | Auto | Organisation from token |
 | `name` | string | Yes | Component/service name |
 | `version` | string | Yes | Version being deployed |
 | `commit_sha` | string | No | Git commit SHA |
 | `pipeline_extra_params` | string | No | JSON string of extra pipeline parameters |
 | `provider` | Provider | Yes | Cloud provider |
-| `cloud_account_id` | string | No | Cloud account identifier |
-| `region` | string | No | Cloud region |
+| `cloud_account_id` | string | Yes | Cloud account identifier |
+| `region` | string | Yes | Cloud region |
 | `environment` | string | Yes | Deployment environment |
-| `cell` | string | No | Cell identifier |
+| `cell_id` | string | No | Cell identifier |
 | `type` | DeploymentType | Yes | Type of deployment |
 | `status` | DeploymentStatus | Auto | Current status (defaults to `scheduled`) |
 | `auto` | boolean | No | Auto-deployment flag (default: `true`) |
+| `trigger` | DeploymentTrigger | Auto | How deployment was triggered |
 | `description` | string | No | Deployment description |
 | `notes` | string | No | Additional notes |
 | `build_uri` | string | No | URI to build artifacts |
 | `deployment_uri` | string | No | URI to deployment |
 | `resource` | string | No | Cloud resource identifier |
+| `source_deployment_id` | string | No | For rollback: deployment being copied |
+| `rollback_from_deployment_id` | string | No | For rollback: deployment being replaced |
+| `created_by_repo` | string | Auto | Repository from token |
+| `created_by_workflow` | string | Auto | Workflow from token |
+| `created_by_actor` | string | Auto | Actor from token |
 
 ## Examples
+
+All examples require authentication headers as described in the [Authentication](#authentication) section.
 
 ### Create a Kubernetes Deployment
 
 ```bash
 curl -X POST http://localhost:8000/v1/deployments \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "user-service",
@@ -277,16 +310,18 @@ curl -X POST http://localhost:8000/v1/deployments \
   }'
 ```
 
-### List Failed Deployments
+### List Scheduled Deployments
 
 ```bash
-curl "http://localhost:8000/v1/deployments?status=failed&environment=production"
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/v1/deployments?status=scheduled"
 ```
 
-### Get Current Production Deployment
+### List Deployments by Taxonomy
 
 ```bash
-curl "http://localhost:8000/v1/deployments/current?\
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/v1/deployments?\
 name=user-service&\
 environment=production&\
 provider=gcp&\
@@ -296,62 +331,45 @@ region=us-central1"
 
 ### Update Deployment Status to Deployed
 
+When marked as deployed, older scheduled deployments for the same taxonomy are automatically skipped.
+
 ```bash
-curl -X PATCH "http://localhost:8000/v1/deployments/current/status?\
-name=user-service&\
-environment=production&\
-provider=gcp&\
-cloud_account_id=my-gcp-project&\
-region=us-central1" \
+curl -X PATCH http://localhost:8000/v1/deployments/abc-123-def \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"status": "deployed"}'
 ```
 
-### Get Deployment History
+### Mark Deployment as Failed
 
 ```bash
-curl "http://localhost:8000/v1/deployments/history?\
-name=user-service&\
-environment=production&\
-provider=gcp&\
-cloud_account_id=my-gcp-project&\
-region=us-central1&\
-limit=10"
+curl -X PATCH http://localhost:8000/v1/deployments/abc-123-def \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"status": "failed", "notes": "Database migration failed"}'
 ```
 
 ### Rollback to Previous Version
 
 ```bash
-curl -X POST "http://localhost:8000/v1/deployments/rollback?\
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/v1/deployments/rollback?\
 name=user-service&\
 environment=production&\
 provider=gcp&\
 cloud_account_id=my-gcp-project&\
-region=us-central1" \
-  -H "Content-Type: application/json" \
-  -d '{}'
+region=us-central1"
 ```
 
 ### Rollback to Specific Version
 
 ```bash
-curl -X POST "http://localhost:8000/v1/deployments/rollback?\
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/v1/deployments/rollback?\
 name=user-service&\
 environment=production&\
 provider=gcp&\
 cloud_account_id=my-gcp-project&\
-region=us-central1" \
-  -H "Content-Type: application/json" \
-  -d '{"target_version": "1.9.5"}'
-```
-
-### Update Deployment Notes
-
-```bash
-curl -X PATCH http://localhost:8000/v1/deployments/abc-123-def \
-  -H "Content-Type: application/json" \
-  -d '{
-    "notes": "Deployment paused for investigation",
-    "status": "skipped"
-  }'
+region=us-central1&\
+target_version=1.9.5"
 ```

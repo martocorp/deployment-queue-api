@@ -1,154 +1,67 @@
 # Deployment Queue API
 
-A FastAPI-based REST API to manage a deployment queue across multiple cloud providers (GCP, AWS, Azure). The API tracks deployment lifecycle, enables status updates via cloud taxonomy, and supports rollbacks.
+A FastAPI-based REST API to manage a deployment queue across multiple cloud providers (GCP, AWS, Azure). The API tracks deployment lifecycle, enables status updates, and supports rollbacks.
 
-**Key Features:**
+## Key Features
+
 - **Dual Authentication**: GitHub OIDC for Actions, GitHub PAT for CLI
 - **Multi-Tenant Isolation**: Each GitHub organisation has isolated data
 - **Deployment Lineage**: Track rollback chains with source and rollback references
+- **Auto-Skip**: When a deployment is marked as deployed, older scheduled deployments are automatically skipped
 
 ## Documentation
 
-- [Usage Guide](docs/USAGE.md) - Detailed usage instructions, API reference, and examples
+- [Usage Guide](docs/USAGE.md) - Detailed API reference and examples
 - [Code Style Guide](docs/CODESTYLE.md) - Coding standards and conventions
 
-## Prerequisites
+## Quick Start
+
+### Prerequisites
 
 - Python 3.11+
-- Snowflake account with key-pair authentication configured
+- Snowflake account with key-pair authentication
 - Docker (optional)
 
-## Local Setup
-
-### 1. Install Dependencies
+### Installation
 
 ```bash
 make init
-```
-
-Or manually:
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install uv
-uv pip install -e ".[dev]"
-```
-
-### 2. Configure Environment
-
-Copy the example environment file:
-
-```bash
 cp .env.example .env
-```
-
-Edit `.env` with your Snowflake connection details:
-
-```bash
-SNOWFLAKE_ACCOUNT=xy12345.eu-west-1
-SNOWFLAKE_USER=deployment_api_user
-SNOWFLAKE_PRIVATE_KEY_PASSPHRASE=your_passphrase_if_key_is_encrypted
-SNOWFLAKE_WAREHOUSE=COMPUTE_WH
-SNOWFLAKE_DATABASE=DEPLOYMENTS_DB
-SNOWFLAKE_SCHEMA=PUBLIC
-
-# Authentication
-AUTH_ENABLED=true
-GITHUB_OIDC_ISSUER=https://token.actions.githubusercontent.com
-GITHUB_OIDC_AUDIENCE=deployment-queue-api
-ALLOWED_ORGANISATIONS=my-org,another-org  # comma-separated, or empty for all
-```
-
-### 3. Place RSA Private Key
-
-Place your Snowflake RSA private key at `secrets/rsa_key.p8`:
-
-```bash
-cp /path/to/your/rsa_key.p8 secrets/rsa_key.p8
-```
-
-For local development, you can also set `SNOWFLAKE_PRIVATE_KEY_PATH` in your `.env` file.
-
-### 4. Initialize Database
-
-Run the schema SQL in Snowflake:
-
-```bash
-snowsql -f sql/schema.sql
-```
-
-Or execute the contents of `sql/schema.sql` in your Snowflake worksheet.
-
-### 5. Verify Connection
-
-```bash
-python scripts/verify_connection.py
-```
-
-### 6. Run the API
-
-```bash
+# Edit .env with your Snowflake credentials
 make run
 ```
 
-Or manually:
-
-```bash
-uvicorn src.deployment_queue.main:app --reload
-```
-
 The API will be available at `http://localhost:8000`.
-
-## Docker Setup
-
-### 1. Configure Environment
-
-Create `.env` file with your Snowflake credentials (see Local Setup step 2).
-
-### 2. Place RSA Private Key
-
-```bash
-cp /path/to/your/rsa_key.p8 secrets/rsa_key.p8
-```
-
-### 3. Run with Docker Compose
-
-```bash
-docker-compose up --build
-```
 
 ## API Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/v1/deployments` | List deployments with optional filters |
+| `GET` | `/health` | Health check (no auth required) |
+| `GET` | `/v1/deployments` | List deployments with filters |
 | `POST` | `/v1/deployments` | Create a new deployment |
-| `GET` | `/v1/deployments/{id}` | Get deployment by ID |
-| `PATCH` | `/v1/deployments/{id}` | Update deployment by ID |
-| `GET` | `/v1/deployments/current` | Get current deployment by taxonomy |
-| `PATCH` | `/v1/deployments/current/status` | Update status by taxonomy |
-| `GET` | `/v1/deployments/history` | Get deployment history by taxonomy |
+| `PATCH` | `/v1/deployments/{id}` | Update deployment status |
 | `POST` | `/v1/deployments/rollback` | Create rollback deployment |
-| `GET` | `/health` | Health check |
-
-## API Documentation
-
-Once running, interactive documentation is available at:
-
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
 
 ## Authentication
 
-The API supports two authentication methods. All endpoints (except `/health`) require authentication.
+The API supports two authentication methods for different use cases:
 
-| Source | Auth Method | Headers |
-|--------|-------------|---------|
+| Use Case | Auth Method | Headers |
+|----------|-------------|---------|
 | **GitHub Actions** | OIDC JWT | `Authorization: Bearer <jwt>` |
-| **CLI** | GitHub PAT | `Authorization: Bearer <pat>` + `X-Organisation: <org>` |
+| **CLI / Terminal** | GitHub PAT | `Authorization: Bearer <pat>` + `X-Organisation: <org>` |
 
-### GitHub Actions Example (OIDC)
+### Multi-Tenancy
+
+- **Organisation Isolation**: Each GitHub organisation has completely isolated data
+- **Automatic Filtering**: All queries are scoped to the authenticated organisation
+- **OIDC**: Organisation extracted from the JWT's `repository_owner` claim
+- **PAT**: Organisation specified via `X-Organisation` header, verified via GitHub API membership
+
+### GitHub Actions (OIDC)
+
+For automated deployments from GitHub Actions workflows:
 
 ```yaml
 jobs:
@@ -166,30 +79,38 @@ jobs:
 
       - name: Create Deployment
         run: |
-          curl -X POST https://your-api/v1/deployments \
+          curl -X POST https://api.example.com/v1/deployments \
             -H "Authorization: Bearer ${{ steps.token.outputs.token }}" \
             -H "Content-Type: application/json" \
-            -d '{"name": "my-service", "version": "1.0.0", ...}'
+            -d '{
+              "name": "my-service",
+              "version": "1.0.0",
+              "provider": "gcp",
+              "cloud_account_id": "my-project",
+              "region": "us-central1",
+              "environment": "production",
+              "type": "k8s"
+            }'
 ```
 
-### CLI Example (PAT)
+### CLI / Terminal (PAT)
+
+For manual operations using `deployment-queue-cli` or direct API calls:
 
 ```bash
-# With GitHub Personal Access Token
-curl -X GET "https://api.example.com/v1/deployments" \
-  -H "Authorization: Bearer ghp_xxxxxxxxxxxx" \
-  -H "X-Organisation: my-org"
-```
+# Set your GitHub PAT and organisation
+export GITHUB_TOKEN="ghp_xxxxxxxxxxxxxxxxxxxx"
+export ORG="my-organisation"
 
-## Example Usage
+# List scheduled deployments
+curl -X GET "https://api.example.com/v1/deployments?status=scheduled" \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "X-Organisation: $ORG"
 
-All examples below require the `Authorization: Bearer <token>` header.
-
-### Create a Deployment
-
-```bash
-curl -X POST http://localhost:8000/v1/deployments \
-  -H "Authorization: Bearer $TOKEN" \
+# Create a deployment
+curl -X POST "https://api.example.com/v1/deployments" \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "X-Organisation: $ORG" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "my-service",
@@ -200,87 +121,53 @@ curl -X POST http://localhost:8000/v1/deployments \
     "environment": "production",
     "type": "k8s"
   }'
-```
 
-### Get Current Deployment by Taxonomy
+# Update deployment status to deployed
+# Note: This automatically skips older scheduled deployments for the same taxonomy
+curl -X PATCH "https://api.example.com/v1/deployments/{deployment_id}" \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "X-Organisation: $ORG" \
+  -H "Content-Type: application/json" \
+  -d '{"status": "deployed"}'
 
-```bash
-curl -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8000/v1/deployments/current?\
+# Rollback to previous version
+curl -X POST "https://api.example.com/v1/deployments/rollback?\
 name=my-service&\
 environment=production&\
 provider=gcp&\
 cloud_account_id=my-project&\
-region=us-central1"
+region=us-central1" \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "X-Organisation: $ORG"
 ```
 
-### Update Deployment Status
+## Taxonomy & Auto-Skip
 
-```bash
-curl -X PATCH -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8000/v1/deployments/current/status?\
-name=my-service&\
-environment=production&\
-provider=gcp&\
-cloud_account_id=my-project&\
-region=us-central1&\
-new_status=deployed"
-```
+Deployments are uniquely identified by a **taxonomy**:
+`organisation` + `name` + `environment` + `provider` + `cloud_account_id` + `region` + `cell_id`
 
-### Rollback to Previous Version
-
-```bash
-curl -X POST -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8000/v1/deployments/rollback?\
-name=my-service&\
-environment=production&\
-provider=gcp&\
-cloud_account_id=my-project&\
-region=us-central1"
-```
+When a deployment is marked as `deployed`, all older scheduled deployments for the same taxonomy are automatically marked as `skipped`. This ensures the deployment queue stays clean and only relevant deployments remain scheduled.
 
 ## Development
-
-### Available Make Commands
 
 | Command | Description |
 |---------|-------------|
 | `make init` | Set up virtual environment and install dependencies |
 | `make run` | Start development server |
 | `make test` | Run tests with coverage |
-| `make lint` | Run linter and type checker |
-| `make format` | Auto-format code |
-| `make security` | Run security scan |
-| `make build` | Build package (runs lint, test, security) |
-| `make clean` | Remove build artifacts and caches |
-| `make docker-build` | Build Docker image |
-| `make docker-run` | Run with Docker Compose |
-
-### Running Tests
-
-```bash
-make test
-```
+| `make build` | Full build: lint, test, security scan, package |
 
 ## Project Structure
 
 ```
 deployment-queue-api/
 ├── src/deployment_queue/
-│   ├── __init__.py
 │   ├── main.py           # FastAPI app and endpoints
 │   ├── auth.py           # GitHub OIDC and PAT authentication
 │   ├── models.py         # Pydantic models and enums
 │   ├── database.py       # Snowflake connection handling
 │   └── config.py         # Settings via pydantic-settings
 ├── tests/                # Test suite
-├── scripts/
-│   └── verify_connection.py  # Test Snowflake connection
-├── sql/                  # Database schema
-├── secrets/              # Git-ignored, for local dev keys
 ├── docs/                 # Documentation
-├── Makefile              # Development commands
-├── Dockerfile
-├── docker-compose.yml
-└── pyproject.toml
+└── sql/                  # Database schema
 ```
