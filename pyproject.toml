@@ -3,7 +3,7 @@ name = "deployment-queue-api"
 version = "0.1.0"
 description = "FastAPI-based REST API to manage a deployment queue across multiple cloud providers"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.110.0",
     "uvicorn>=0.27.0",
@@ -35,7 +35,7 @@ packages = ["src/deployment_queue"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]

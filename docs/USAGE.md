@@ -16,7 +16,7 @@ This document provides detailed usage instructions for the Deployment Queue API.
 
 ## Prerequisites
 
-- Python 3.11 or higher
+- Python 3.13 or higher
 - Snowflake account with key-pair authentication configured
 - Docker (optional, for containerized deployment)
 

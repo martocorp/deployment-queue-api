@@ -18,7 +18,7 @@ A FastAPI-based REST API to manage a deployment queue across multiple cloud prov
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.13+
 - Snowflake account with key-pair authentication
 - Docker (optional)
 

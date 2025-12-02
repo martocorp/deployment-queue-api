@@ -10,7 +10,7 @@ init: clean
 lint:
 	. .venv/bin/activate; \
 	ruff check src/ tests/; \
-	mypy src/ --python-version 3.11 --ignore-missing-imports
+	mypy src/ --python-version 3.13 --ignore-missing-imports
 
 .PHONY: format
 format:
