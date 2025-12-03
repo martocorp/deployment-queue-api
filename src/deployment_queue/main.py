@@ -1,14 +1,24 @@
 """FastAPI application and endpoints for the Deployment Queue API."""
 
+import time
 from datetime import UTC, datetime
 from typing import Any, Optional
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi.responses import Response
 from snowflake.connector import DictCursor
 
 from deployment_queue.auth import TokenPayload, verify_token
 from deployment_queue.database import get_cursor
+from deployment_queue.metrics import (
+    deployments_created_total,
+    deployments_skipped_total,
+    deployments_updated_total,
+    http_request_duration_seconds,
+    http_requests_total,
+    rollbacks_total,
+)
 from deployment_queue.models import (
     Deployment,
     DeploymentCreate,
@@ -27,14 +37,33 @@ app = FastAPI(
 
 
 # -----------------------------------------------------------------------------
-# Health check (no auth required)
+# Metrics Middleware
 # -----------------------------------------------------------------------------
 
 
-@app.get("/health")
-def health_check() -> dict[str, str]:
-    """Health check endpoint - no authentication required."""
-    return {"status": "healthy"}
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next: Any) -> Response:
+    """Record HTTP request metrics."""
+    start_time = time.perf_counter()
+
+    response = await call_next(request)
+
+    duration = time.perf_counter() - start_time
+    endpoint = request.url.path
+    method = request.method
+
+    http_requests_total.labels(
+        method=method,
+        endpoint=endpoint,
+        status_code=response.status_code,
+    ).inc()
+
+    http_request_duration_seconds.labels(
+        method=method,
+        endpoint=endpoint,
+    ).observe(duration)
+
+    return response
 
 
 # -----------------------------------------------------------------------------
@@ -163,6 +192,14 @@ async def create_deployment(
         },
     )
 
+    # Record metric
+    deployments_created_total.labels(
+        organisation=token.organisation,
+        provider=deployment.provider.value,
+        environment=deployment.environment,
+        trigger=trigger.value,
+    ).inc()
+
     cursor.execute("SELECT * FROM deployments WHERE id = %(id)s", {"id": deployment_id})
     return row_to_deployment(cursor.fetchone())  # type: ignore[arg-type]
 
@@ -211,9 +248,20 @@ async def update_deployment(
         update_data
     )
 
+    # Record metric
+    if new_status:
+        deployments_updated_total.labels(
+            organisation=token.organisation,
+            status=new_status.value,
+        ).inc()
+
     # Auto-skip older scheduled deployments when marking as deployed
     if new_status == DeploymentStatus.deployed:
-        _skip_older_scheduled_deployments(cursor, deployment_row, now)
+        skipped_count = _skip_older_scheduled_deployments(cursor, deployment_row, now)
+        if skipped_count > 0:
+            deployments_skipped_total.labels(
+                organisation=token.organisation,
+            ).inc(skipped_count)
 
     cursor.execute("SELECT * FROM deployments WHERE id = %(id)s", {"id": deployment_id})
     return row_to_deployment(cursor.fetchone())  # type: ignore[arg-type]
@@ -223,13 +271,15 @@ def _skip_older_scheduled_deployments(
     cursor: DictCursor,
     deployed_row: dict,
     now: datetime,
-) -> None:
+) -> int:
     """
     Mark older scheduled deployments as skipped.
 
     When a deployment is marked as 'deployed', any scheduled deployments
     for the same taxonomy that were created BEFORE this deployment should
     be skipped (they're now outdated).
+
+    Returns the number of deployments skipped.
     """
     # Build the taxonomy match condition
     # nosec B608 - query built with hardcoded strings and parameterized values
@@ -268,6 +318,8 @@ def _skip_older_scheduled_deployments(
         skip_query += " AND cell_id IS NULL"
 
     cursor.execute(skip_query, params)
+    rowcount = getattr(cursor, "rowcount", None)
+    return rowcount if rowcount is not None else 0
 
 
 @app.post(
@@ -401,6 +453,13 @@ async def rollback_deployment(
             "created_by_actor": token.actor,
         },
     )
+
+    # Record metric
+    rollbacks_total.labels(
+        organisation=token.organisation,
+        provider=provider.value,
+        environment=environment,
+    ).inc()
 
     cursor.execute("SELECT * FROM deployments WHERE id = %(id)s", {"id": deployment_id})
     return row_to_deployment(cursor.fetchone())  # type: ignore[arg-type]

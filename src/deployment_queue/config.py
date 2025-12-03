@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     jwks_cache_ttl: int = 3600  # 1 hour
     org_membership_cache_ttl: int = 300  # 5 minutes
 
+    # Server ports
+    api_port: int = 8000
+    management_port: int = 9090
+
     model_config = SettingsConfigDict(env_file=".env")
 
 

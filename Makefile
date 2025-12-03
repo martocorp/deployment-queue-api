@@ -40,6 +40,11 @@ build: lint test security
 .PHONY: run
 run:
 	. .venv/bin/activate; \
+	python -m deployment_queue.server
+
+.PHONY: run-dev
+run-dev:
+	. .venv/bin/activate; \
 	uvicorn deployment_queue.main:app --reload
 
 .PHONY: docker-build

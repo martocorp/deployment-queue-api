@@ -31,17 +31,26 @@ cp .env.example .env
 make run
 ```
 
-The API will be available at `http://localhost:8000`.
+The API runs on two ports:
+- **API server**: `http://localhost:8000` - Main API endpoints
+- **Management server**: `http://localhost:9090` - Health, readiness, and metrics
 
 ## API Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/health` | Health check (no auth required) |
 | `GET` | `/v1/deployments` | List deployments with filters |
 | `POST` | `/v1/deployments` | Create a new deployment |
 | `PATCH` | `/v1/deployments/{id}` | Update deployment status |
 | `POST` | `/v1/deployments/rollback` | Create rollback deployment |
+
+## Management Endpoints (Port 9090)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/health` | Health check (liveness probe) |
+| `GET` | `/ready` | Readiness check |
+| `GET` | `/metrics` | Prometheus metrics |
 
 ## Authentication
 
@@ -163,6 +172,9 @@ When a deployment is marked as `deployed`, all older scheduled deployments for t
 deployment-queue-api/
 ├── src/deployment_queue/
 │   ├── main.py           # FastAPI app and endpoints
+│   ├── management.py     # Management server (health, metrics)
+│   ├── metrics.py        # Prometheus metrics definitions
+│   ├── server.py         # Dual-server runner
 │   ├── auth.py           # GitHub OIDC and PAT authentication
 │   ├── models.py         # Pydantic models and enums
 │   ├── database.py       # Snowflake connection handling

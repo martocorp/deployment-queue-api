@@ -96,13 +96,15 @@ python scripts/verify_connection.py
 make run
 ```
 
-Or manually:
+This starts both servers:
+- **API server**: `http://localhost:8000` - Main API endpoints
+- **Management server**: `http://localhost:9090` - Health, readiness, and Prometheus metrics
+
+For development with auto-reload (API only):
 
 ```bash
-uvicorn src.deployment_queue.main:app --reload
+make run-dev
 ```
-
-The API will be available at `http://localhost:8000`.
 
 ### Docker
 
@@ -116,6 +118,27 @@ Once running, interactive documentation is available at:
 
 - **Swagger UI**: `http://localhost:8000/docs`
 - **ReDoc**: `http://localhost:8000/redoc`
+
+### Management Endpoints
+
+The management server runs on port 9090 and exposes:
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health` | Health check (liveness probe) |
+| `GET /ready` | Readiness check |
+| `GET /metrics` | Prometheus metrics in text format |
+
+Example:
+```bash
+curl http://localhost:9090/health
+# {"status": "healthy"}
+
+curl http://localhost:9090/metrics
+# HELP deployment_queue_info Deployment Queue API information
+# TYPE deployment_queue_info gauge
+# ...
+```
 
 ## Authentication
 
@@ -211,14 +234,6 @@ When a deployment is marked as `deployed`, all older scheduled deployments for t
 - Superseded versions are properly tracked
 
 ## API Endpoints
-
-### Health Check
-
-```
-GET /health
-```
-
-Returns `{"status": "healthy"}` when the API is running. No authentication required.
 
 ### List Deployments
 

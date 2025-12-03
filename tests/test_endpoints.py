@@ -11,17 +11,6 @@ from deployment_queue.main import app
 from .conftest import MockCursor, create_mock_deployment_row
 
 
-class TestHealthCheck:
-    """Tests for health check endpoint."""
-
-    def test_health_check_no_auth(self) -> None:
-        """Health check works without authentication."""
-        with TestClient(app) as client:
-            response = client.get("/health")
-            assert response.status_code == 200
-            assert response.json() == {"status": "healthy"}
-
-
 class TestCreateDeployment:
     """Tests for POST /v1/deployments endpoint."""
 
