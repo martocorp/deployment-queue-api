@@ -153,7 +153,7 @@ region=us-central1" \
 ## Taxonomy & Auto-Skip
 
 Deployments are uniquely identified by a **taxonomy**:
-`organisation` + `name` + `environment` + `provider` + `cloud_account_id` + `region` + `cell_id`
+`organisation` + `name` + `environment` + `provider` + `cloud_account_id` + `region` + `cell`
 
 When a deployment is marked as `deployed`, all older scheduled deployments for the same taxonomy are automatically marked as `skipped`. This ensures the deployment queue stays clean and only relevant deployments remain scheduled.
 

@@ -79,7 +79,7 @@ async def list_deployments(
     provider: Optional[Provider] = None,
     cloud_account_id: Optional[str] = None,
     region: Optional[str] = None,
-    cell_id: Optional[str] = None,
+    cell: Optional[str] = None,
     trigger: Optional[DeploymentTrigger] = None,
     limit: int = Query(default=100, le=1000),
     cursor: DictCursor = Depends(get_cursor),
@@ -111,9 +111,9 @@ async def list_deployments(
     if region:
         query += " AND region = %(region)s"
         params["region"] = region
-    if cell_id:
-        query += " AND cell_id = %(cell_id)s"
-        params["cell_id"] = cell_id
+    if cell:
+        query += " AND cell = %(cell)s"
+        params["cell"] = cell
     if trigger:
         query += " AND trigger = %(trigger)s"
         params["trigger"] = trigger.value
@@ -148,7 +148,7 @@ async def create_deployment(
         INSERT INTO deployments (
             id, created_at, updated_at, organisation,
             name, version, commit_sha, pipeline_extra_params,
-            provider, cloud_account_id, region, environment, cell_id,
+            provider, cloud_account_id, region, environment, cell,
             type, status, auto, description, notes,
             trigger, source_deployment_id, rollback_from_deployment_id,
             build_uri, deployment_uri, resource,
@@ -156,7 +156,7 @@ async def create_deployment(
         ) VALUES (
             %(id)s, %(created_at)s, %(updated_at)s, %(organisation)s,
             %(name)s, %(version)s, %(commit_sha)s, %(pipeline_extra_params)s,
-            %(provider)s, %(cloud_account_id)s, %(region)s, %(environment)s, %(cell_id)s,
+            %(provider)s, %(cloud_account_id)s, %(region)s, %(environment)s, %(cell)s,
             %(type)s, %(status)s, %(auto)s, %(description)s, %(notes)s,
             %(trigger)s, NULL, NULL,
             %(build_uri)s, %(deployment_uri)s, %(resource)s,
@@ -176,7 +176,7 @@ async def create_deployment(
             "cloud_account_id": deployment.cloud_account_id,
             "region": deployment.region,
             "environment": deployment.environment,
-            "cell_id": deployment.cell_id,
+            "cell": deployment.cell,
             "type": deployment.type.value,
             "status": DeploymentStatus.scheduled.value,
             "auto": deployment.auto,
@@ -215,7 +215,7 @@ async def update_deployment(
     Update a deployment by ID (must belong to authenticated organisation).
 
     When setting status to 'deployed', all older scheduled deployments for the
-    same taxonomy (name, environment, provider, cloud_account_id, region, cell_id)
+    same taxonomy (name, environment, provider, cloud_account_id, region, cell)
     will be automatically marked as 'skipped'.
     """
     # Fetch the deployment to update
@@ -309,13 +309,13 @@ def _skip_older_scheduled_deployments(
         "id": deployed_row["ID"],
     }
 
-    # Handle cell_id NULL comparison
-    cell_id = deployed_row.get("CELL_ID")
-    if cell_id:
-        skip_query += " AND cell_id = %(cell_id)s"
-        params["cell_id"] = cell_id
+    # Handle cell NULL comparison
+    cell = deployed_row.get("CELL")
+    if cell:
+        skip_query += " AND cell = %(cell)s"
+        params["cell"] = cell
     else:
-        skip_query += " AND cell_id IS NULL"
+        skip_query += " AND cell IS NULL"
 
     cursor.execute(skip_query, params)
     rowcount = getattr(cursor, "rowcount", None)
@@ -331,7 +331,7 @@ async def rollback_deployment(
     provider: Provider = Query(...),
     cloud_account_id: str = Query(...),
     region: str = Query(...),
-    cell_id: Optional[str] = Query(default=None),
+    cell: Optional[str] = Query(default=None),
     target_version: Optional[str] = Query(default=None),
     cursor: DictCursor = Depends(get_cursor),
     token: TokenPayload = Depends(verify_token),
@@ -362,11 +362,11 @@ async def rollback_deployment(
         "region": region,
     }
 
-    if cell_id:
-        base_query += " AND cell_id = %(cell_id)s"
-        base_params["cell_id"] = cell_id
+    if cell:
+        base_query += " AND cell = %(cell)s"
+        base_params["cell"] = cell
     else:
-        base_query += " AND cell_id IS NULL"
+        base_query += " AND cell IS NULL"
 
     # Find current deployment (the one we're rolling back FROM)
     cursor.execute(base_query + " ORDER BY created_at DESC LIMIT 1", base_params)
@@ -406,7 +406,7 @@ async def rollback_deployment(
         INSERT INTO deployments (
             id, created_at, updated_at, organisation,
             name, version, commit_sha, pipeline_extra_params,
-            provider, cloud_account_id, region, environment, cell_id,
+            provider, cloud_account_id, region, environment, cell,
             type, status, auto, description, notes,
             trigger, source_deployment_id, rollback_from_deployment_id,
             build_uri, deployment_uri, resource,
@@ -414,7 +414,7 @@ async def rollback_deployment(
         ) VALUES (
             %(id)s, %(created_at)s, %(updated_at)s, %(organisation)s,
             %(name)s, %(version)s, %(commit_sha)s, %(pipeline_extra_params)s,
-            %(provider)s, %(cloud_account_id)s, %(region)s, %(environment)s, %(cell_id)s,
+            %(provider)s, %(cloud_account_id)s, %(region)s, %(environment)s, %(cell)s,
             %(type)s, %(status)s, %(auto)s, %(description)s, %(notes)s,
             %(trigger)s, %(source_deployment_id)s, %(rollback_from_deployment_id)s,
             %(build_uri)s, NULL, %(resource)s,
@@ -434,7 +434,7 @@ async def rollback_deployment(
             "cloud_account_id": rollback_source.get("CLOUD_ACCOUNT_ID"),
             "region": rollback_source.get("REGION"),
             "environment": rollback_source["ENVIRONMENT"],
-            "cell_id": rollback_source.get("CELL_ID"),
+            "cell": rollback_source.get("CELL"),
             "type": rollback_source["TYPE"],
             "status": DeploymentStatus.scheduled.value,
             "auto": False,

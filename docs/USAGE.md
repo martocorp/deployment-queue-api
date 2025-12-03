@@ -223,7 +223,7 @@ Deployments are uniquely identified by a **taxonomy** - a combination of:
 | `provider` | Cloud provider (gcp, aws, azure) |
 | `cloud_account_id` | Cloud account identifier |
 | `region` | Cloud region |
-| `cell_id` | Optional cell identifier |
+| `cell` | Optional cell identifier |
 
 ### Auto-Skip Behavior
 
@@ -248,7 +248,7 @@ Query parameters:
 - `provider` (optional): Filter by provider (`gcp`, `aws`, `azure`)
 - `cloud_account_id` (optional): Filter by cloud account
 - `region` (optional): Filter by region
-- `cell_id` (optional): Filter by cell
+- `cell` (optional): Filter by cell
 - `trigger` (optional): Filter by trigger (`auto`, `manual`, `rollback`)
 - `limit` (optional): Maximum results (default: 100, max: 1000)
 
@@ -286,7 +286,7 @@ Required query parameters:
 - `region`: Cloud region
 
 Optional:
-- `cell_id`: Cell identifier
+- `cell`: Cell identifier
 - `target_version`: Specific version to rollback to (defaults to previous deployment)
 
 Rollback creates a NEW deployment record with:
@@ -337,7 +337,7 @@ Rollback creates a NEW deployment record with:
 | `cloud_account_id` | string | Yes | Cloud account identifier |
 | `region` | string | Yes | Cloud region |
 | `environment` | string | Yes | Deployment environment |
-| `cell_id` | string | No | Cell identifier |
+| `cell` | string | No | Cell identifier |
 | `type` | DeploymentType | Yes | Type of deployment |
 | `status` | DeploymentStatus | Auto | Current status (defaults to `scheduled`) |
 | `auto` | boolean | No | Auto-deployment flag (default: `true`) |

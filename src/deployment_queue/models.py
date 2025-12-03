@@ -52,7 +52,7 @@ class DeploymentCreate(BaseModel):
     cloud_account_id: Optional[str] = None
     region: Optional[str] = None
     environment: str
-    cell_id: Optional[str] = None
+    cell: Optional[str] = None
     type: DeploymentType
     auto: bool = True
     description: Optional[str] = None
@@ -85,7 +85,7 @@ class Deployment(BaseModel):
     cloud_account_id: Optional[str] = None
     region: Optional[str] = None
     environment: str
-    cell_id: Optional[str] = None
+    cell: Optional[str] = None
     type: DeploymentType
     status: DeploymentStatus
     auto: bool
@@ -120,7 +120,7 @@ def row_to_deployment(row: dict) -> Deployment:
         cloud_account_id=row.get("CLOUD_ACCOUNT_ID"),
         region=row.get("REGION"),
         environment=row["ENVIRONMENT"],
-        cell_id=row.get("CELL_ID"),
+        cell=row.get("CELL"),
         type=row["TYPE"],
         status=row["STATUS"],
         auto=row.get("AUTO", True),

@@ -66,7 +66,7 @@ class TestCreateDeployment:
                         "cloud_account_id": "123456789",
                         "region": "us-east-1",
                         "environment": "staging",
-                        "cell_id": "cell-1",
+                        "cell": "cell-1",
                         "type": "terraform",
                         "auto": False,
                         "description": "Test deployment",

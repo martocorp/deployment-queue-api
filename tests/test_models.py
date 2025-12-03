@@ -69,7 +69,7 @@ class TestDeploymentCreate:
             cloud_account_id="123456789",
             region="us-east-1",
             environment="staging",
-            cell_id="cell-1",
+            cell="cell-1",
             type=DeploymentType.terraform,
             auto=False,
             description="Test deployment",
@@ -80,7 +80,7 @@ class TestDeploymentCreate:
         )
         assert deployment.commit_sha == "abc123"
         assert deployment.auto is False
-        assert deployment.cell_id == "cell-1"
+        assert deployment.cell == "cell-1"
 
     def test_deployment_create_missing_required_fields(self):
         with pytest.raises(ValidationError):
@@ -219,7 +219,7 @@ class TestRowToDeployment:
             "CLOUD_ACCOUNT_ID": "project-123",
             "REGION": "us-central1",
             "ENVIRONMENT": "production",
-            "CELL_ID": None,
+            "CELL": None,
             "TYPE": "k8s",
             "STATUS": "scheduled",
             "AUTO": True,
@@ -243,10 +243,10 @@ class TestRowToDeployment:
         assert deployment.name == "test-service"
         assert deployment.provider == Provider.gcp
         assert deployment.status == DeploymentStatus.scheduled
-        assert deployment.cell_id is None
+        assert deployment.cell is None
         assert deployment.trigger == DeploymentTrigger.auto
 
-    def test_row_to_deployment_with_cell_id(self):
+    def test_row_to_deployment_with_cell(self):
         now = datetime.now(UTC)
         row = {
             "ID": "test-uuid",
@@ -261,7 +261,7 @@ class TestRowToDeployment:
             "CLOUD_ACCOUNT_ID": "123456789",
             "REGION": "us-east-1",
             "ENVIRONMENT": "staging",
-            "CELL_ID": "cell-1",
+            "CELL": "cell-1",
             "TYPE": "terraform",
             "STATUS": "deployed",
             "AUTO": False,
@@ -280,7 +280,7 @@ class TestRowToDeployment:
 
         deployment = row_to_deployment(row)
 
-        assert deployment.cell_id == "cell-1"
+        assert deployment.cell == "cell-1"
         assert deployment.provider == Provider.aws
         assert deployment.status == DeploymentStatus.deployed
         assert deployment.auto is False
@@ -304,7 +304,7 @@ class TestRowToDeployment:
             "CLOUD_ACCOUNT_ID": "project-123",
             "REGION": "us-central1",
             "ENVIRONMENT": "production",
-            "CELL_ID": None,
+            "CELL": None,
             "TYPE": "k8s",
             "STATUS": "scheduled",
             "AUTO": True,

@@ -1,54 +1,58 @@
 -- Snowflake DDL for Deployment Queue API
 
+CREATE DATABASE DEPLOYMENTS_DB;
+
+USE DEPLOYMENTS_DB;
+
 CREATE TABLE IF NOT EXISTS deployments (
-    id STRING PRIMARY KEY,
-    created_at TIMESTAMP_NTZ NOT NULL,
-    updated_at TIMESTAMP_NTZ NOT NULL,
+    `id` STRING PRIMARY KEY,
+    `created_at` TIMESTAMP_NTZ NOT NULL,
+    `updated_at` TIMESTAMP_NTZ NOT NULL,
 
     -- Multi-tenancy: derived from GitHub token repository_owner
-    organisation STRING NOT NULL,
+    `organisation` STRING NOT NULL,
 
     -- Component identification
-    name STRING NOT NULL,
-    version STRING NOT NULL,
-    commit_sha STRING,
+    `name` STRING NOT NULL,
+    `version` STRING NOT NULL,
+    `commit_sha` STRING,
 
     -- Cloud taxonomy
-    provider STRING NOT NULL,
-    cloud_account_id STRING,
-    region STRING,
-    environment STRING NOT NULL,
-    cell_id STRING,
+    `provider` STRING NOT NULL,
+    `cloud_account_id` STRING,
+    `region` STRING,
+    `environment` STRING NOT NULL,
+    `cell` STRING,
 
     -- Deployment metadata
-    type STRING NOT NULL,
-    status STRING NOT NULL DEFAULT 'scheduled',
-    auto BOOLEAN DEFAULT TRUE,
-    description STRING,
-    notes STRING,
+    `type` STRING NOT NULL,
+    `status` STRING NOT NULL DEFAULT 'scheduled',
+    `auto` BOOLEAN DEFAULT TRUE,
+    `description` STRING,
+    `notes` STRING,
 
     -- Deployment lineage
-    trigger STRING NOT NULL DEFAULT 'manual',       -- 'manual', 'auto', 'rollback'
-    source_deployment_id STRING,                    -- For rollbacks: deployment we copied config from
-    rollback_from_deployment_id STRING,             -- For rollbacks: deployment we're replacing
+    `trigger` STRING NOT NULL DEFAULT 'manual',       -- 'manual', 'auto', 'rollback'
+    `source_deployment_id` STRING,                    -- For rollbacks: deployment we copied config from
+    `rollback_from_deployment_id` STRING,             -- For rollbacks: deployment we're replacing
 
     -- Pipeline/build info
-    pipeline_extra_params STRING,
-    build_uri STRING,
-    deployment_uri STRING,
-    resource STRING,
+    `pipeline_extra_params` STRING,
+    `build_uri` STRING,
+    `deployment_uri` STRING,
+    `resource` STRING,
 
     -- Audit: which repo/workflow created this
-    created_by_repo STRING,
-    created_by_workflow STRING,
-    created_by_actor STRING
+    `created_by_repo` STRING,
+    `created_by_workflow` STRING,
+    `created_by_actor` STRING
 );
 
 -- Indices for tenant isolation and common queries
-CREATE INDEX IF NOT EXISTS idx_deployments_org ON deployments (organisation);
-CREATE INDEX IF NOT EXISTS idx_deployments_org_env ON deployments (organisation, environment);
+CREATE INDEX IF NOT EXISTS idx_deployments_org ON deployments (`organisation`);
+CREATE INDEX IF NOT EXISTS idx_deployments_org_env ON deployments (`organisation`, `environment`);
 CREATE INDEX IF NOT EXISTS idx_deployments_taxonomy ON deployments (
-    organisation, name, environment, provider, cloud_account_id, region, cell_id
+    `organisation`, `name`, `environment`, `provider`, `cloud_account_id`, `region`, `cell`
 );
-CREATE INDEX IF NOT EXISTS idx_deployments_created ON deployments (organisation, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_deployments_lineage ON deployments (source_deployment_id);
+CREATE INDEX IF NOT EXISTS idx_deployments_created ON deployments (`organisation`, `created_at` DESC);
+CREATE INDEX IF NOT EXISTS idx_deployments_lineage ON deployments (`source_deployment_id`);

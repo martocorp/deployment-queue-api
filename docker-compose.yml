@@ -1,33 +1,54 @@
-version: '3.8'
+-- Snowflake DDL for Deployment Queue API
 
-services:
-  api:
-    build: .
-    ports:
-      - "8000:8000"
-    environment:
-      SNOWFLAKE_ACCOUNT: ${SNOWFLAKE_ACCOUNT}
-      SNOWFLAKE_USER: ${SNOWFLAKE_USER}
-      SNOWFLAKE_PRIVATE_KEY_PATH: /run/secrets/snowflake_key
-      SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE:-}
-      SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE:-COMPUTE_WH}
-      SNOWFLAKE_DATABASE: ${SNOWFLAKE_DATABASE:-DEPLOYMENTS_DB}
-      SNOWFLAKE_SCHEMA: ${SNOWFLAKE_SCHEMA:-PUBLIC}
-      # Authentication
-      AUTH_ENABLED: ${AUTH_ENABLED:-true}
-      GITHUB_OIDC_ISSUER: ${GITHUB_OIDC_ISSUER:-https://token.actions.githubusercontent.com}
-      GITHUB_OIDC_AUDIENCE: ${GITHUB_OIDC_AUDIENCE:-deployment-queue-api}
-      # GitHub API (for CLI auth)
-      GITHUB_API_URL: ${GITHUB_API_URL:-https://api.github.com}
-      GITHUB_API_VERSION: ${GITHUB_API_VERSION:-2022-11-28}
-      ALLOWED_ORGANISATIONS: ${ALLOWED_ORGANISATIONS:-}
-      # Cache TTLs
-      JWKS_CACHE_TTL: ${JWKS_CACHE_TTL:-3600}
-      ORG_MEMBERSHIP_CACHE_TTL: ${ORG_MEMBERSHIP_CACHE_TTL:-300}
-      DEV_ORGANISATION: ${DEV_ORGANISATION:-local-dev}
-    secrets:
-      - snowflake_key
+CREATE TABLE IF NOT EXISTS deployments (
+    id STRING PRIMARY KEY,
+    created_at TIMESTAMP_NTZ NOT NULL,
+    updated_at TIMESTAMP_NTZ NOT NULL,
 
-secrets:
-  snowflake_key:
-    file: ./secrets/rsa_key.p8
+    -- Multi-tenancy: derived from GitHub token repository_owner
+    organisation STRING NOT NULL,
+
+    -- Component identification
+    name STRING NOT NULL,
+    version STRING NOT NULL,
+    commit_sha STRING,
+
+    -- Cloud taxonomy
+    provider STRING NOT NULL,
+    cloud_account_id STRING,
+    region STRING,
+    environment STRING NOT NULL,
+    cell STRING,
+
+    -- Deployment metadata
+    type STRING NOT NULL,
+    status STRING NOT NULL DEFAULT 'scheduled',
+    auto BOOLEAN DEFAULT TRUE,
+    description STRING,
+    notes STRING,
+
+    -- Deployment lineage
+    trigger STRING NOT NULL DEFAULT 'manual',       -- 'manual', 'auto', 'rollback'
+    source_deployment_id STRING,                    -- For rollbacks: deployment we copied config from
+    rollback_from_deployment_id STRING,             -- For rollbacks: deployment we're replacing
+
+    -- Pipeline/build info
+    pipeline_extra_params STRING,
+    build_uri STRING,
+    deployment_uri STRING,
+    resource STRING,
+
+    -- Audit: which repo/workflow created this
+    created_by_repo STRING,
+    created_by_workflow STRING,
+    created_by_actor STRING
+);
+
+-- Indices for tenant isolation and common queries
+CREATE INDEX IF NOT EXISTS idx_deployments_org ON deployments (organisation);
+CREATE INDEX IF NOT EXISTS idx_deployments_org_env ON deployments (organisation, environment);
+CREATE INDEX IF NOT EXISTS idx_deployments_taxonomy ON deployments (
+    organisation, name, environment, provider, cloud_account_id, region, cell
+);
+CREATE INDEX IF NOT EXISTS idx_deployments_created ON deployments (organisation, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_deployments_lineage ON deployments (source_deployment_id);
