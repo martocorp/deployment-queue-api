@@ -115,7 +115,7 @@ async def list_deployments(
         query += " AND cell = %(cell)s"
         params["cell"] = cell
     if trigger:
-        query += " AND trigger = %(trigger)s"
+        query += ' AND "trigger" = %(trigger)s'
         params["trigger"] = trigger.value
 
     query += " ORDER BY created_at DESC LIMIT %(limit)s"
@@ -150,7 +150,7 @@ async def create_deployment(
             name, version, commit_sha, pipeline_extra_params,
             provider, cloud_account_id, region, environment, cell,
             type, status, auto, description, notes,
-            trigger, source_deployment_id, rollback_from_deployment_id,
+            "trigger", source_deployment_id, rollback_from_deployment_id,
             build_uri, deployment_uri, resource,
             created_by_repo, created_by_workflow, created_by_actor
         ) VALUES (
@@ -408,7 +408,7 @@ async def rollback_deployment(
             name, version, commit_sha, pipeline_extra_params,
             provider, cloud_account_id, region, environment, cell,
             type, status, auto, description, notes,
-            trigger, source_deployment_id, rollback_from_deployment_id,
+            "trigger", source_deployment_id, rollback_from_deployment_id,
             build_uri, deployment_uri, resource,
             created_by_repo, created_by_workflow, created_by_actor
         ) VALUES (

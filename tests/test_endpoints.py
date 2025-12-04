@@ -168,7 +168,7 @@ class TestListDeployments:
     ) -> None:
         response = client.get("/v1/deployments", params={"trigger": "rollback"})
         assert response.status_code == 200
-        assert "trigger = %(trigger)s" in mock_cursor_single.executed_queries[0]
+        assert '"trigger" = %(trigger)s' in mock_cursor_single.executed_queries[0]
 
     def test_list_deployments_filter_by_taxonomy(
         self, mock_cursor_single: MockCursor, client: TestClient

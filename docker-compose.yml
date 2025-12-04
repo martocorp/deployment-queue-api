@@ -30,4 +30,4 @@ services:
 
 secrets:
   snowflake_key:
-    file: ./secrets/rsa_key.p8
+    file: ./.secrets/rsa_key.p8
