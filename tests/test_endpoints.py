@@ -361,7 +361,6 @@ class TestRollback:
                     "/v1/deployments/rollback",
                     params={
                         "name": "test-service",
-                        "environment": "production",
                         "provider": "gcp",
                         "cloud_account_id": "project-123",
                         "region": "us-central1",
@@ -405,7 +404,6 @@ class TestRollback:
                     "/v1/deployments/rollback",
                     params={
                         "name": "test-service",
-                        "environment": "production",
                         "provider": "gcp",
                         "cloud_account_id": "project-123",
                         "region": "us-central1",
@@ -434,7 +432,6 @@ class TestRollback:
                     "/v1/deployments/rollback",
                     params={
                         "name": "test-service",
-                        "environment": "production",
                         "provider": "gcp",
                         "cloud_account_id": "project-123",
                         "region": "us-central1",
@@ -463,7 +460,6 @@ class TestRollback:
                     "/v1/deployments/rollback",
                     params={
                         "name": "test-service",
-                        "environment": "production",
                         "provider": "gcp",
                         "cloud_account_id": "project-123",
                         "region": "us-central1",

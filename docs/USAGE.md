@@ -219,7 +219,6 @@ Deployments are uniquely identified by a **taxonomy** - a combination of:
 |-------|-------------|
 | `organisation` | GitHub organisation (from authentication) |
 | `name` | Component/service name |
-| `environment` | Deployment environment (e.g., production, staging) |
 | `provider` | Cloud provider (gcp, aws, azure) |
 | `cloud_account_id` | Cloud account identifier |
 | `region` | Cloud region |
@@ -280,7 +279,6 @@ POST /v1/deployments/rollback
 
 Required query parameters:
 - `name`: Component name
-- `environment`: Environment
 - `provider`: Cloud provider (`gcp`, `aws`, `azure`)
 - `cloud_account_id`: Cloud account identifier
 - `region`: Cloud region
@@ -472,7 +470,6 @@ curl -X PATCH "$API_URL/v1/deployments/abc-123-def" \
 ```bash
 curl -X POST "$API_URL/v1/deployments/rollback?\
 name=user-service&\
-environment=production&\
 provider=gcp&\
 cloud_account_id=my-gcp-project&\
 region=us-central1" \
@@ -485,7 +482,6 @@ region=us-central1" \
 ```bash
 curl -X POST "$API_URL/v1/deployments/rollback?\
 name=user-service&\
-environment=production&\
 provider=gcp&\
 cloud_account_id=my-gcp-project&\
 region=us-central1&\

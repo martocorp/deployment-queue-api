@@ -42,7 +42,7 @@ deployments_skipped_total = Counter(
 rollbacks_total = Counter(
     "rollbacks_total",
     "Total number of rollback deployments created",
-    ["organisation", "provider", "environment"],
+    ["organisation", "provider"],
 )
 
 # Database metrics

@@ -215,7 +215,7 @@ async def update_deployment(
     Update a deployment by ID (must belong to authenticated organisation).
 
     When setting status to 'deployed', all older scheduled deployments for the
-    same taxonomy (name, environment, provider, cloud_account_id, region, cell)
+    same taxonomy (name, provider, cloud_account_id, region, cell)
     will be automatically marked as 'skipped'.
     """
     # Fetch the deployment to update
@@ -288,7 +288,6 @@ def _skip_older_scheduled_deployments(
         SET status = 'skipped', updated_at = %(now)s
         WHERE organisation = %(organisation)s
           AND name = %(name)s
-          AND environment = %(environment)s
           AND provider = %(provider)s
           AND cloud_account_id = %(cloud_account_id)s
           AND region = %(region)s
@@ -301,7 +300,6 @@ def _skip_older_scheduled_deployments(
         "now": now,
         "organisation": deployed_row["ORGANISATION"],
         "name": deployed_row["NAME"],
-        "environment": deployed_row["ENVIRONMENT"],
         "provider": deployed_row["PROVIDER"],
         "cloud_account_id": deployed_row["CLOUD_ACCOUNT_ID"],
         "region": deployed_row["REGION"],
@@ -327,7 +325,6 @@ def _skip_older_scheduled_deployments(
 )
 async def rollback_deployment(
     name: str = Query(...),
-    environment: str = Query(...),
     provider: Provider = Query(...),
     cloud_account_id: str = Query(...),
     region: str = Query(...),
@@ -349,14 +346,13 @@ async def rollback_deployment(
     """
     # Build taxonomy filter
     base_query = "SELECT * FROM deployments WHERE organisation = %(organisation)s"
-    base_query += " AND name = %(name)s AND environment = %(environment)s"
+    base_query += " AND name = %(name)s"
     base_query += " AND provider = %(provider)s AND cloud_account_id = %(cloud_account_id)s"
     base_query += " AND region = %(region)s"
 
     base_params: dict[str, Any] = {
         "organisation": token.organisation,
         "name": name,
-        "environment": environment,
         "provider": provider.value,
         "cloud_account_id": cloud_account_id,
         "region": region,
@@ -458,7 +454,6 @@ async def rollback_deployment(
     rollbacks_total.labels(
         organisation=token.organisation,
         provider=provider.value,
-        environment=environment,
     ).inc()
 
     cursor.execute("SELECT * FROM deployments WHERE id = %(id)s", {"id": deployment_id})

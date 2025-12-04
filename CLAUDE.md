@@ -49,7 +49,7 @@ The API supports two authentication methods:
 
 ### Core Concept: Taxonomy
 
-Deployments are uniquely identified by a "taxonomy" - a combination of: `organisation` + `name` + `environment` + `provider` + `cloud_account_id` + `region` + `cell`. The `list_deployments` endpoint supports filtering by any combination of these fields (organisation is always from the token).
+Deployments are uniquely identified by a "taxonomy" - a combination of: `organisation` + `name` + `provider` + `cloud_account_id` + `region` + `cell`. The `list_deployments` endpoint supports filtering by any combination of these fields (organisation is always from the token).
 
 ### Auto-Skip Behavior
 
