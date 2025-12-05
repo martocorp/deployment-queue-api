@@ -65,9 +65,24 @@ Deployments track their lineage for rollback traceability:
 ### Rollback Behavior
 
 When `POST /v1/deployments/{id}/rollback` is called:
-1. The deployment with the given ID is marked as `rolled_back`
+1. The deployment with the given ID (the failed one) is marked as `rolled_back`
 2. The API finds the latest successful (`deployed`) deployment for the same taxonomy
-3. A new deployment is created copying from that successful deployment, with status `scheduled`
+3. A new deployment is created copying from that successful deployment
+4. The new deployment is automatically set to `in_progress` (auto-release)
+5. The `_execute_release()` function is called with `operation="rollback"`
+
+### Release Logic
+
+The `_execute_release()` function is a placeholder for type-specific deployment logic. It is called whenever a deployment transitions to `in_progress`:
+
+- **Regular release**: When `PATCH /v1/deployments/{id}` sets `status=in_progress`, called with `operation="release"`
+- **Rollback release**: After rollback creates a new deployment, called with `operation="rollback"`
+
+The function receives:
+- `deployment_row`: Full deployment data (UPPERCASE keys from Snowflake), including `TYPE`
+- `operation`: Either `"release"` or `"rollback"`
+
+This allows implementing type-specific logic (e.g., trigger different pipelines for `k8s`, `terraform`, `data_pipeline`).
 
 ### Module Structure
 

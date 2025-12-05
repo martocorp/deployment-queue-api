@@ -249,6 +249,10 @@ async def update_deployment(
             status=new_status.value,
         ).inc()
 
+    # Execute release logic when transitioning to in_progress
+    if new_status == DeploymentStatus.in_progress:
+        _execute_release(cursor, deployment_row, now, operation="release")
+
     # Auto-skip older scheduled deployments when marking as deployed
     if new_status == DeploymentStatus.deployed:
         skipped_count = _skip_older_version_deployments(cursor, deployment_row, now)
@@ -259,6 +263,38 @@ async def update_deployment(
 
     cursor.execute("SELECT * FROM deployments WHERE id = %(id)s", {"id": deployment_id})
     return row_to_deployment(cursor.fetchone())  # type: ignore[arg-type]
+
+
+def _execute_release(
+    cursor: DictCursor,
+    deployment_row: dict[str, Any],
+    now: datetime,
+    operation: str,
+) -> None:
+    """
+    Execute release logic for a deployment.
+
+    This function is called when a deployment transitions to 'in_progress'.
+    It serves as a placeholder for type-specific release logic.
+
+    Args:
+        cursor: Database cursor
+        deployment_row: The deployment row being released (UPPERCASE keys from Snowflake)
+        now: Current timestamp
+        operation: Either 'release' (normal deployment) or 'rollback'
+    """
+    deployment_type = deployment_row["TYPE"]
+
+    # TODO: Add type-specific release logic here
+    # Example:
+    # if deployment_type == "k8s":
+    #     _trigger_k8s_deployment(deployment_row)
+    # elif deployment_type == "terraform":
+    #     _trigger_terraform_apply(deployment_row)
+    # elif deployment_type == "data_pipeline":
+    #     _trigger_data_pipeline(deployment_row)
+
+    _ = (cursor, deployment_type, now, operation)  # Suppress unused warnings
 
 
 def _parse_version(version: str) -> tuple[int, ...]:
@@ -540,5 +576,9 @@ async def rollback_deployment(
         status=DeploymentStatus.in_progress.value,
     ).inc()
 
+    # Fetch the new deployment and execute release logic
     cursor.execute("SELECT * FROM deployments WHERE id = %(id)s", {"id": new_deployment_id})
-    return row_to_deployment(cursor.fetchone())  # type: ignore[arg-type]
+    new_deployment_row = cursor.fetchone()
+    _execute_release(cursor, new_deployment_row, now, operation="rollback")  # type: ignore[arg-type]
+
+    return row_to_deployment(new_deployment_row)  # type: ignore[arg-type]

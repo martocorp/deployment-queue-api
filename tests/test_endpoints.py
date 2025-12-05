@@ -270,6 +270,65 @@ class TestUpdateDeployment:
         finally:
             app.dependency_overrides.clear()
 
+    def test_update_deployment_to_in_progress_triggers_release(
+        self, mock_token: TokenPayload
+    ) -> None:
+        """When status changes to in_progress, release logic is triggered."""
+        mock = MockCursor([
+            create_mock_deployment_row(status="scheduled", deployment_type="k8s"),
+            create_mock_deployment_row(status="in_progress", deployment_type="k8s"),
+        ])
+
+        def override_get_cursor() -> Generator[MockCursor, None, None]:
+            yield mock
+
+        app.dependency_overrides[get_cursor] = override_get_cursor
+        app.dependency_overrides[verify_token] = lambda: mock_token
+
+        try:
+            with TestClient(app) as client:
+                response = client.patch(
+                    "/v1/deployments/test-uuid",
+                    json={"status": "in_progress"},
+                )
+                assert response.status_code == 200
+                data = response.json()
+                assert data["status"] == "in_progress"
+                # Verify the UPDATE query was executed with in_progress status
+                update_query = mock.executed_queries[1]
+                assert "UPDATE" in update_query
+                assert mock.executed_params[1]["status"] == "in_progress"
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_update_deployment_to_scheduled_does_not_trigger_release(
+        self, mock_token: TokenPayload
+    ) -> None:
+        """When status changes to scheduled, release logic is NOT triggered."""
+        mock = MockCursor([
+            create_mock_deployment_row(status="in_progress"),
+            create_mock_deployment_row(status="scheduled"),
+        ])
+
+        def override_get_cursor() -> Generator[MockCursor, None, None]:
+            yield mock
+
+        app.dependency_overrides[get_cursor] = override_get_cursor
+        app.dependency_overrides[verify_token] = lambda: mock_token
+
+        try:
+            with TestClient(app) as client:
+                response = client.patch(
+                    "/v1/deployments/test-uuid",
+                    json={"status": "scheduled"},
+                )
+                assert response.status_code == 200
+                # Only 3 queries: SELECT *, UPDATE, SELECT *
+                # No additional release logic queries
+                assert len(mock.executed_queries) == 3
+        finally:
+            app.dependency_overrides.clear()
+
     def test_update_deployment_not_found(
         self, mock_cursor_empty: MockCursor, client: TestClient
     ) -> None:
