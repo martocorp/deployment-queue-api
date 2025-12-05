@@ -75,7 +75,6 @@ async def metrics_middleware(request: Request, call_next: Any) -> Response:
 async def list_deployments(
     deployment_status: Optional[DeploymentStatus] = Query(default=None, alias="status"),
     name: Optional[str] = None,
-    environment: Optional[str] = None,
     provider: Optional[Provider] = None,
     cloud_account_id: Optional[str] = None,
     region: Optional[str] = None,
@@ -99,9 +98,6 @@ async def list_deployments(
     if name:
         query += " AND name = %(name)s"
         params["name"] = name
-    if environment:
-        query += " AND environment = %(environment)s"
-        params["environment"] = environment
     if provider:
         query += " AND provider = %(provider)s"
         params["provider"] = provider.value
@@ -148,7 +144,7 @@ async def create_deployment(
         INSERT INTO deployments (
             id, created_at, updated_at, organisation,
             name, version, commit_sha, pipeline_extra_params,
-            provider, cloud_account_id, region, environment, cell,
+            provider, cloud_account_id, region, cell,
             type, status, auto, description, notes,
             "trigger", source_deployment_id, rollback_from_deployment_id,
             build_uri, deployment_uri, resource,
@@ -156,7 +152,7 @@ async def create_deployment(
         ) VALUES (
             %(id)s, %(created_at)s, %(updated_at)s, %(organisation)s,
             %(name)s, %(version)s, %(commit_sha)s, %(pipeline_extra_params)s,
-            %(provider)s, %(cloud_account_id)s, %(region)s, %(environment)s, %(cell)s,
+            %(provider)s, %(cloud_account_id)s, %(region)s, %(cell)s,
             %(type)s, %(status)s, %(auto)s, %(description)s, %(notes)s,
             %(trigger)s, NULL, NULL,
             %(build_uri)s, %(deployment_uri)s, %(resource)s,
@@ -175,7 +171,6 @@ async def create_deployment(
             "provider": deployment.provider.value,
             "cloud_account_id": deployment.cloud_account_id,
             "region": deployment.region,
-            "environment": deployment.environment,
             "cell": deployment.cell,
             "type": deployment.type.value,
             "status": DeploymentStatus.scheduled.value,
@@ -196,7 +191,6 @@ async def create_deployment(
     deployments_created_total.labels(
         organisation=token.organisation,
         provider=deployment.provider.value,
-        environment=deployment.environment,
         trigger=trigger.value,
     ).inc()
 
@@ -257,7 +251,7 @@ async def update_deployment(
 
     # Auto-skip older scheduled deployments when marking as deployed
     if new_status == DeploymentStatus.deployed:
-        skipped_count = _skip_older_scheduled_deployments(cursor, deployment_row, now)
+        skipped_count = _skip_scheduled_deployments(cursor, deployment_row, now)
         if skipped_count > 0:
             deployments_skipped_total.labels(
                 organisation=token.organisation,
@@ -267,17 +261,16 @@ async def update_deployment(
     return row_to_deployment(cursor.fetchone())  # type: ignore[arg-type]
 
 
-def _skip_older_scheduled_deployments(
+def _skip_scheduled_deployments(
     cursor: DictCursor,
     deployed_row: dict,
     now: datetime,
 ) -> int:
     """
-    Mark older scheduled deployments as skipped.
+    Mark all scheduled deployments for the same taxonomy as skipped.
 
-    When a deployment is marked as 'deployed', any scheduled deployments
-    for the same taxonomy that were created BEFORE this deployment should
-    be skipped (they're now outdated).
+    When a deployment is marked as 'deployed', all other scheduled deployments
+    for the same taxonomy should be skipped (they're now superseded).
 
     Returns the number of deployments skipped.
     """
@@ -292,7 +285,6 @@ def _skip_older_scheduled_deployments(
           AND cloud_account_id = %(cloud_account_id)s
           AND region = %(region)s
           AND status = 'scheduled'
-          AND created_at < %(created_at)s
           AND id != %(id)s
     """
 
@@ -303,7 +295,6 @@ def _skip_older_scheduled_deployments(
         "provider": deployed_row["PROVIDER"],
         "cloud_account_id": deployed_row["CLOUD_ACCOUNT_ID"],
         "region": deployed_row["REGION"],
-        "created_at": deployed_row["CREATED_AT"],
         "id": deployed_row["ID"],
     }
 
@@ -321,80 +312,70 @@ def _skip_older_scheduled_deployments(
 
 
 @app.post(
-    "/v1/deployments/rollback", response_model=Deployment, status_code=status.HTTP_201_CREATED
+    "/v1/deployments/{deployment_id}/rollback",
+    response_model=Deployment,
+    status_code=status.HTTP_201_CREATED,
 )
 async def rollback_deployment(
-    name: str = Query(...),
-    provider: Provider = Query(...),
-    cloud_account_id: str = Query(...),
-    region: str = Query(...),
-    cell: Optional[str] = Query(default=None),
-    target_version: Optional[str] = Query(default=None),
+    deployment_id: str,
     cursor: DictCursor = Depends(get_cursor),
     token: TokenPayload = Depends(verify_token),
 ) -> Deployment:
     """
-    Create a rollback deployment for a component.
+    Create a rollback deployment from a specific deployment.
+
+    The deployment_id is the deployment to roll back TO (the source).
+    A new deployment is created copying the configuration from this deployment.
 
     Lineage tracking:
     - trigger: Set to 'rollback'
-    - source_deployment_id: The deployment we're copying configuration from
-    - rollback_from_deployment_id: The current deployment we're replacing
-
-    If target_version is provided, rolls back to that specific version.
-    Otherwise, rolls back to the previous deployment.
+    - source_deployment_id: The deployment we're copying configuration from (deployment_id)
+    - rollback_from_deployment_id: The most recent deployment for the same taxonomy
     """
-    # Build taxonomy filter
-    base_query = "SELECT * FROM deployments WHERE organisation = %(organisation)s"
-    base_query += " AND name = %(name)s"
-    base_query += " AND provider = %(provider)s AND cloud_account_id = %(cloud_account_id)s"
-    base_query += " AND region = %(region)s"
+    # Fetch the deployment to rollback TO (source)
+    cursor.execute(
+        "SELECT * FROM deployments WHERE id = %(id)s AND organisation = %(organisation)s",
+        {"id": deployment_id, "organisation": token.organisation},
+    )
+    rollback_source = cursor.fetchone()
 
-    base_params: dict[str, Any] = {
+    if not rollback_source:
+        raise HTTPException(status_code=404, detail="Deployment not found")
+
+    # Build taxonomy query to find the most recent deployment (rollback FROM)
+    # Exclude the source deployment itself
+    taxonomy_query = """
+        SELECT * FROM deployments
+        WHERE organisation = %(organisation)s
+          AND name = %(name)s
+          AND provider = %(provider)s
+          AND cloud_account_id = %(cloud_account_id)s
+          AND region = %(region)s
+          AND id != %(source_id)s
+    """
+    taxonomy_params: dict[str, Any] = {
         "organisation": token.organisation,
-        "name": name,
-        "provider": provider.value,
-        "cloud_account_id": cloud_account_id,
-        "region": region,
+        "name": rollback_source["NAME"],
+        "provider": rollback_source["PROVIDER"],
+        "cloud_account_id": rollback_source["CLOUD_ACCOUNT_ID"],
+        "region": rollback_source["REGION"],
+        "source_id": deployment_id,
     }
 
+    cell = rollback_source.get("CELL")
     if cell:
-        base_query += " AND cell = %(cell)s"
-        base_params["cell"] = cell
+        taxonomy_query += " AND cell = %(cell)s"
+        taxonomy_params["cell"] = cell
     else:
-        base_query += " AND cell IS NULL"
+        taxonomy_query += " AND cell IS NULL"
 
-    # Find current deployment (the one we're rolling back FROM)
-    cursor.execute(base_query + " ORDER BY created_at DESC LIMIT 1", base_params)
+    taxonomy_query += " ORDER BY created_at DESC LIMIT 1"
+    cursor.execute(taxonomy_query, taxonomy_params)
     current_deployment = cursor.fetchone()
     rollback_from_id = current_deployment["ID"] if current_deployment else None
 
-    # Find the deployment to rollback TO (source)
-    if target_version:
-        version_query = base_query + " AND version = %(version)s ORDER BY created_at DESC LIMIT 1"
-        version_params = {**base_params, "version": target_version}
-        cursor.execute(version_query, version_params)
-        rollback_source = cursor.fetchone()
-
-        if not rollback_source:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No deployment found with version {target_version}",
-            )
-    else:
-        # Get second most recent
-        cursor.execute(base_query + " ORDER BY created_at DESC LIMIT 2", base_params)
-        rows = cursor.fetchall()
-
-        if len(rows) < 2:
-            raise HTTPException(
-                status_code=404,
-                detail="No previous deployment to rollback to",
-            )
-        rollback_source = rows[1]
-
     # Create new deployment as rollback
-    deployment_id = str(uuid4())
+    new_deployment_id = str(uuid4())
     now = datetime.now(UTC)
 
     cursor.execute(
@@ -402,7 +383,7 @@ async def rollback_deployment(
         INSERT INTO deployments (
             id, created_at, updated_at, organisation,
             name, version, commit_sha, pipeline_extra_params,
-            provider, cloud_account_id, region, environment, cell,
+            provider, cloud_account_id, region, cell,
             type, status, auto, description, notes,
             "trigger", source_deployment_id, rollback_from_deployment_id,
             build_uri, deployment_uri, resource,
@@ -410,7 +391,7 @@ async def rollback_deployment(
         ) VALUES (
             %(id)s, %(created_at)s, %(updated_at)s, %(organisation)s,
             %(name)s, %(version)s, %(commit_sha)s, %(pipeline_extra_params)s,
-            %(provider)s, %(cloud_account_id)s, %(region)s, %(environment)s, %(cell)s,
+            %(provider)s, %(cloud_account_id)s, %(region)s, %(cell)s,
             %(type)s, %(status)s, %(auto)s, %(description)s, %(notes)s,
             %(trigger)s, %(source_deployment_id)s, %(rollback_from_deployment_id)s,
             %(build_uri)s, NULL, %(resource)s,
@@ -418,7 +399,7 @@ async def rollback_deployment(
         )
         """,
         {
-            "id": deployment_id,
+            "id": new_deployment_id,
             "created_at": now,
             "updated_at": now,
             "organisation": token.organisation,
@@ -429,7 +410,6 @@ async def rollback_deployment(
             "provider": rollback_source["PROVIDER"],
             "cloud_account_id": rollback_source.get("CLOUD_ACCOUNT_ID"),
             "region": rollback_source.get("REGION"),
-            "environment": rollback_source["ENVIRONMENT"],
             "cell": rollback_source.get("CELL"),
             "type": rollback_source["TYPE"],
             "status": DeploymentStatus.scheduled.value,
@@ -450,11 +430,27 @@ async def rollback_deployment(
         },
     )
 
+    # Mark the deployment we're rolling back from as 'rolled_back'
+    if rollback_from_id:
+        cursor.execute(
+            """
+            UPDATE deployments
+            SET status = %(status)s, updated_at = %(updated_at)s
+            WHERE id = %(id)s AND organisation = %(organisation)s
+            """,
+            {
+                "status": DeploymentStatus.rolled_back.value,
+                "updated_at": now,
+                "id": rollback_from_id,
+                "organisation": token.organisation,
+            },
+        )
+
     # Record metric
     rollbacks_total.labels(
         organisation=token.organisation,
-        provider=provider.value,
+        provider=rollback_source["PROVIDER"],
     ).inc()
 
-    cursor.execute("SELECT * FROM deployments WHERE id = %(id)s", {"id": deployment_id})
+    cursor.execute("SELECT * FROM deployments WHERE id = %(id)s", {"id": new_deployment_id})
     return row_to_deployment(cursor.fetchone())  # type: ignore[arg-type]

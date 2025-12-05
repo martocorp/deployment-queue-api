@@ -24,7 +24,7 @@ http_request_duration_seconds = Histogram(
 deployments_created_total = Counter(
     "deployments_created_total",
     "Total number of deployments created",
-    ["organisation", "provider", "environment", "trigger"],
+    ["organisation", "provider", "trigger"],
 )
 
 deployments_updated_total = Counter(

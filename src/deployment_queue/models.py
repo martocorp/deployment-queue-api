@@ -31,6 +31,7 @@ class DeploymentStatus(str, Enum):
     deployed = "deployed"
     skipped = "skipped"
     failed = "failed"
+    rolled_back = "rolled_back"
 
 
 class DeploymentTrigger(str, Enum):
@@ -51,7 +52,6 @@ class DeploymentCreate(BaseModel):
     provider: Provider
     cloud_account_id: Optional[str] = None
     region: Optional[str] = None
-    environment: str
     cell: Optional[str] = None
     type: DeploymentType
     auto: bool = True
@@ -84,7 +84,6 @@ class Deployment(BaseModel):
     provider: Provider
     cloud_account_id: Optional[str] = None
     region: Optional[str] = None
-    environment: str
     cell: Optional[str] = None
     type: DeploymentType
     status: DeploymentStatus
@@ -119,7 +118,6 @@ def row_to_deployment(row: dict) -> Deployment:
         provider=row["PROVIDER"],
         cloud_account_id=row.get("CLOUD_ACCOUNT_ID"),
         region=row.get("REGION"),
-        environment=row["ENVIRONMENT"],
         cell=row.get("CELL"),
         type=row["TYPE"],
         status=row["STATUS"],

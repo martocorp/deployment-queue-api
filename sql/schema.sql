@@ -15,7 +15,6 @@ CREATE TABLE IF NOT EXISTS deployments (
   provider STRING NOT NULL,
   cloud_account_id STRING,
   region STRING,
-  environment STRING NOT NULL,
   cell STRING,
   type STRING NOT NULL,
   status STRING NOT NULL DEFAULT 'scheduled',

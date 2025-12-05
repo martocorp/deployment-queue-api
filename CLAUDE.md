@@ -32,7 +32,7 @@ This is a FastAPI REST API for tracking deployment lifecycle across cloud provid
 | `GET` | `/v1/deployments` | List deployments with filters |
 | `POST` | `/v1/deployments` | Create a new deployment |
 | `PATCH` | `/v1/deployments/{id}` | Update deployment status |
-| `POST` | `/v1/deployments/rollback` | Create rollback deployment |
+| `POST` | `/v1/deployments/{id}/rollback` | Create rollback deployment from a specific deployment |
 
 ### Authentication & Multi-Tenancy
 
@@ -53,7 +53,7 @@ Deployments are uniquely identified by a "taxonomy" - a combination of: `organis
 
 ### Auto-Skip Behavior
 
-When a deployment is marked as `deployed`, all older scheduled deployments for the same taxonomy are automatically marked as `skipped`. This happens in `_skip_older_scheduled_deployments()` and ensures the deployment queue stays clean.
+When a deployment is marked as `deployed`, all other scheduled deployments for the same taxonomy are automatically marked as `skipped`. This happens in `_skip_scheduled_deployments()` and ensures the deployment queue stays clean.
 
 ### Deployment Lineage
 
