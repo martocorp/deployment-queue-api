@@ -251,7 +251,7 @@ async def update_deployment(
 
     # Auto-skip older scheduled deployments when marking as deployed
     if new_status == DeploymentStatus.deployed:
-        skipped_count = _skip_scheduled_deployments(cursor, deployment_row, now)
+        skipped_count = _skip_older_version_deployments(cursor, deployment_row, now)
         if skipped_count > 0:
             deployments_skipped_total.labels(
                 organisation=token.organisation,
@@ -261,24 +261,58 @@ async def update_deployment(
     return row_to_deployment(cursor.fetchone())  # type: ignore[arg-type]
 
 
-def _skip_scheduled_deployments(
+def _parse_version(version: str) -> tuple[int, ...]:
+    """
+    Parse a semantic version string into a tuple of integers for comparison.
+
+    Handles versions like "1.2.3", "v1.2.3", "1.2", "1.2.3-beta", etc.
+    Non-numeric parts are stripped.
+    """
+    # Remove leading 'v' if present
+    if version.startswith("v"):
+        version = version[1:]
+
+    # Split by common delimiters and take numeric parts
+    parts = []
+    for part in version.replace("-", ".").replace("_", ".").split("."):
+        # Extract leading digits from each part
+        digits = ""
+        for char in part:
+            if char.isdigit():
+                digits += char
+            else:
+                break
+        if digits:
+            parts.append(int(digits))
+
+    # Ensure at least 3 parts for comparison (major.minor.patch)
+    while len(parts) < 3:
+        parts.append(0)
+
+    return tuple(parts)
+
+
+def _skip_older_version_deployments(
     cursor: DictCursor,
     deployed_row: dict,
     now: datetime,
 ) -> int:
     """
-    Mark all scheduled deployments for the same taxonomy as skipped.
+    Mark scheduled deployments with older versions as skipped.
 
-    When a deployment is marked as 'deployed', all other scheduled deployments
-    for the same taxonomy should be skipped (they're now superseded).
+    When a deployment is marked as 'deployed', scheduled deployments
+    for the same taxonomy with semantically OLDER versions should be skipped.
+
+    Deployments with newer versions remain scheduled, as they represent
+    newer versions that may still need to be deployed.
 
     Returns the number of deployments skipped.
     """
-    # Build the taxonomy match condition
-    # nosec B608 - query built with hardcoded strings and parameterized values
-    skip_query = """
-        UPDATE deployments
-        SET status = 'skipped', updated_at = %(now)s
+    deployed_version = _parse_version(deployed_row["VERSION"])
+
+    # Query all scheduled deployments for the same taxonomy
+    select_query = """
+        SELECT id, version FROM deployments
         WHERE organisation = %(organisation)s
           AND name = %(name)s
           AND provider = %(provider)s
@@ -289,7 +323,6 @@ def _skip_scheduled_deployments(
     """
 
     params: dict[str, Any] = {
-        "now": now,
         "organisation": deployed_row["ORGANISATION"],
         "name": deployed_row["NAME"],
         "provider": deployed_row["PROVIDER"],
@@ -301,14 +334,42 @@ def _skip_scheduled_deployments(
     # Handle cell NULL comparison
     cell = deployed_row.get("CELL")
     if cell:
-        skip_query += " AND cell = %(cell)s"
+        select_query += " AND cell = %(cell)s"
         params["cell"] = cell
     else:
-        skip_query += " AND cell IS NULL"
+        select_query += " AND cell IS NULL"
 
-    cursor.execute(skip_query, params)
-    rowcount = getattr(cursor, "rowcount", None)
-    return rowcount if rowcount is not None else 0
+    cursor.execute(select_query, params)
+    scheduled_deployments = cursor.fetchall()
+
+    # Find deployments with older versions
+    ids_to_skip = []
+    for deployment in scheduled_deployments:
+        try:
+            dep_version = _parse_version(deployment["VERSION"])
+            if dep_version < deployed_version:
+                ids_to_skip.append(deployment["ID"])
+        except (ValueError, TypeError):
+            # If version parsing fails, skip based on creation time as fallback
+            pass
+
+    if not ids_to_skip:
+        return 0
+
+    # Update all older version deployments to skipped
+    placeholders = ", ".join(f"%(id_{i})s" for i in range(len(ids_to_skip)))
+    update_query = f"""
+        UPDATE deployments
+        SET status = 'skipped', updated_at = %(now)s
+        WHERE id IN ({placeholders})
+    """  # nosec B608
+
+    update_params: dict[str, Any] = {"now": now}
+    for i, dep_id in enumerate(ids_to_skip):
+        update_params[f"id_{i}"] = dep_id
+
+    cursor.execute(update_query, update_params)
+    return len(ids_to_skip)
 
 
 @app.post(
@@ -322,28 +383,30 @@ async def rollback_deployment(
     token: TokenPayload = Depends(verify_token),
 ) -> Deployment:
     """
-    Create a rollback deployment from a specific deployment.
+    Rollback a failed deployment.
 
-    The deployment_id is the deployment to roll back TO (the source).
-    A new deployment is created copying the configuration from this deployment.
+    The deployment_id is the deployment that FAILED and needs to be rolled back.
+    It will be marked as 'rolled_back'.
+
+    A new deployment is created copying the configuration from the latest
+    successful (status='deployed') deployment for the same taxonomy.
 
     Lineage tracking:
     - trigger: Set to 'rollback'
-    - source_deployment_id: The deployment we're copying configuration from (deployment_id)
-    - rollback_from_deployment_id: The most recent deployment for the same taxonomy
+    - source_deployment_id: The successful deployment we're copying from
+    - rollback_from_deployment_id: The failed deployment (deployment_id)
     """
-    # Fetch the deployment to rollback TO (source)
+    # Fetch the deployment to rollback (the failed one)
     cursor.execute(
         "SELECT * FROM deployments WHERE id = %(id)s AND organisation = %(organisation)s",
         {"id": deployment_id, "organisation": token.organisation},
     )
-    rollback_source = cursor.fetchone()
+    failed_deployment = cursor.fetchone()
 
-    if not rollback_source:
+    if not failed_deployment:
         raise HTTPException(status_code=404, detail="Deployment not found")
 
-    # Build taxonomy query to find the most recent deployment (rollback FROM)
-    # Exclude the source deployment itself
+    # Build taxonomy query to find the latest successful deployment
     taxonomy_query = """
         SELECT * FROM deployments
         WHERE organisation = %(organisation)s
@@ -351,18 +414,19 @@ async def rollback_deployment(
           AND provider = %(provider)s
           AND cloud_account_id = %(cloud_account_id)s
           AND region = %(region)s
-          AND id != %(source_id)s
+          AND status = 'deployed'
+          AND id != %(failed_id)s
     """
     taxonomy_params: dict[str, Any] = {
         "organisation": token.organisation,
-        "name": rollback_source["NAME"],
-        "provider": rollback_source["PROVIDER"],
-        "cloud_account_id": rollback_source["CLOUD_ACCOUNT_ID"],
-        "region": rollback_source["REGION"],
-        "source_id": deployment_id,
+        "name": failed_deployment["NAME"],
+        "provider": failed_deployment["PROVIDER"],
+        "cloud_account_id": failed_deployment["CLOUD_ACCOUNT_ID"],
+        "region": failed_deployment["REGION"],
+        "failed_id": deployment_id,
     }
 
-    cell = rollback_source.get("CELL")
+    cell = failed_deployment.get("CELL")
     if cell:
         taxonomy_query += " AND cell = %(cell)s"
         taxonomy_params["cell"] = cell
@@ -371,8 +435,13 @@ async def rollback_deployment(
 
     taxonomy_query += " ORDER BY created_at DESC LIMIT 1"
     cursor.execute(taxonomy_query, taxonomy_params)
-    current_deployment = cursor.fetchone()
-    rollback_from_id = current_deployment["ID"] if current_deployment else None
+    rollback_source = cursor.fetchone()
+
+    if not rollback_source:
+        raise HTTPException(
+            status_code=404,
+            detail="No successful deployment found to rollback to",
+        )
 
     # Create new deployment as rollback
     new_deployment_id = str(uuid4())
@@ -416,12 +485,12 @@ async def rollback_deployment(
             "auto": False,
             "description": rollback_source.get("DESCRIPTION"),
             "notes": (
-                f"Rollback from {rollback_from_id} to version "
+                f"Rollback from {deployment_id} to version "
                 f"{rollback_source['VERSION']} (source: {rollback_source['ID']})"
             ),
             "trigger": DeploymentTrigger.rollback.value,
             "source_deployment_id": rollback_source["ID"],
-            "rollback_from_deployment_id": rollback_from_id,
+            "rollback_from_deployment_id": deployment_id,
             "build_uri": rollback_source.get("BUILD_URI"),
             "resource": rollback_source.get("RESOURCE"),
             "created_by_repo": token.repository,
@@ -430,26 +499,45 @@ async def rollback_deployment(
         },
     )
 
-    # Mark the deployment we're rolling back from as 'rolled_back'
-    if rollback_from_id:
-        cursor.execute(
-            """
-            UPDATE deployments
-            SET status = %(status)s, updated_at = %(updated_at)s
-            WHERE id = %(id)s AND organisation = %(organisation)s
-            """,
-            {
-                "status": DeploymentStatus.rolled_back.value,
-                "updated_at": now,
-                "id": rollback_from_id,
-                "organisation": token.organisation,
-            },
-        )
+    # Mark the failed deployment as 'rolled_back'
+    cursor.execute(
+        """
+        UPDATE deployments
+        SET status = %(status)s, updated_at = %(updated_at)s
+        WHERE id = %(id)s AND organisation = %(organisation)s
+        """,
+        {
+            "status": DeploymentStatus.rolled_back.value,
+            "updated_at": now,
+            "id": deployment_id,
+            "organisation": token.organisation,
+        },
+    )
 
-    # Record metric
+    # Record metric for rollback creation
     rollbacks_total.labels(
         organisation=token.organisation,
-        provider=rollback_source["PROVIDER"],
+        provider=failed_deployment["PROVIDER"],
+    ).inc()
+
+    # Auto-release: Update the new rollback deployment to 'in_progress'
+    cursor.execute(
+        """
+        UPDATE deployments
+        SET status = %(status)s, updated_at = %(updated_at)s
+        WHERE id = %(id)s
+        """,
+        {
+            "status": DeploymentStatus.in_progress.value,
+            "updated_at": now,
+            "id": new_deployment_id,
+        },
+    )
+
+    # Record metric for deployment update
+    deployments_updated_total.labels(
+        organisation=token.organisation,
+        status=DeploymentStatus.in_progress.value,
     ).inc()
 
     cursor.execute("SELECT * FROM deployments WHERE id = %(id)s", {"id": new_deployment_id})

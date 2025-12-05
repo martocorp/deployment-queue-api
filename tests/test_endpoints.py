@@ -2,13 +2,44 @@
 
 from typing import Generator
 
+import pytest
 from fastapi.testclient import TestClient
 
 from deployment_queue.auth import TokenPayload, verify_token
 from deployment_queue.database import get_cursor
-from deployment_queue.main import app
+from deployment_queue.main import _parse_version, app
 
 from .conftest import MockCursor, create_mock_deployment_row
+
+
+class TestParseVersion:
+    """Tests for semantic version parsing."""
+
+    @pytest.mark.parametrize(
+        "version,expected",
+        [
+            ("1.2.3", (1, 2, 3)),
+            ("v1.2.3", (1, 2, 3)),
+            ("1.2", (1, 2, 0)),
+            ("1", (1, 0, 0)),
+            ("1.2.3-beta", (1, 2, 3)),
+            ("1.2.3-rc1", (1, 2, 3)),
+            ("1.2.3_alpha", (1, 2, 3)),
+            ("10.20.30", (10, 20, 30)),
+        ],
+    )
+    def test_parse_version(self, version: str, expected: tuple[int, ...]) -> None:
+        assert _parse_version(version) == expected
+
+    def test_version_comparison(self) -> None:
+        """Verify version comparison works correctly."""
+        assert _parse_version("1.0.0") < _parse_version("2.0.0")
+        assert _parse_version("1.2.0") < _parse_version("1.3.0")
+        assert _parse_version("1.2.3") < _parse_version("1.2.4")
+        assert _parse_version("1.9.0") < _parse_version("1.10.0")
+        assert _parse_version("v1.0.0") == _parse_version("1.0.0")
+        assert _parse_version("1.3.3") < _parse_version("1.3.4")
+        assert _parse_version("1.3.3") < _parse_version("1.4.0")
 
 
 class TestCreateDeployment:
@@ -255,13 +286,19 @@ class TestUpdateDeployment:
         assert response.status_code == 400
         assert "No fields to update" in response.json()["detail"]
 
-    def test_update_deployment_skips_all_scheduled_when_deployed(
+    def test_update_deployment_skips_older_versions_when_deployed(
         self, mock_token: TokenPayload
     ) -> None:
-        """When marked as deployed, all scheduled deployments are skipped."""
+        """When marked as deployed, older version scheduled deployments are skipped."""
+        # The function now does:
+        # 1. SELECT * from deployment (fetchone) - gets deployed row
+        # 2. UPDATE deployment status
+        # 3. SELECT scheduled deployments (fetchall) - gets list
+        # 4. UPDATE to skip older versions (if any)
+        # 5. SELECT * from deployment (fetchone) - returns updated deployment
         mock = MockCursor([
-            create_mock_deployment_row(),  # SELECT * to get full row
-            create_mock_deployment_row(status="deployed"),  # Final SELECT
+            create_mock_deployment_row(version="2.0.0"),  # Query 1: SELECT * fetchone
+            create_mock_deployment_row(status="deployed", version="2.0.0"),  # Query 5: final SELECT
         ])
 
         def override_get_cursor() -> Generator[MockCursor, None, None]:
@@ -277,13 +314,11 @@ class TestUpdateDeployment:
                     json={"status": "deployed"},
                 )
                 assert response.status_code == 200
-                # Verify skip query was executed (3rd query after SELECT *, UPDATE)
+                # Verify SELECT for scheduled deployments was executed
                 assert len(mock.executed_queries) >= 3
-                skip_query = mock.executed_queries[2]
-                assert "UPDATE deployments" in skip_query
-                assert "status = 'skipped'" in skip_query
-                assert "status = 'scheduled'" in skip_query
-                assert "id != %(id)s" in skip_query
+                select_query = mock.executed_queries[2]
+                assert "SELECT" in select_query
+                assert "status = 'scheduled'" in select_query
         finally:
             app.dependency_overrides.clear()
 
@@ -324,23 +359,25 @@ class TestRollback:
     """Tests for POST /v1/deployments/{id}/rollback endpoint."""
 
     def test_rollback(self, mock_token: TokenPayload) -> None:
-        """Rollback creates new deployment with lineage fields."""
+        """Rollback marks failed deployment as rolled_back and creates new from latest deployed."""
         # Mock data sequence for fetchone calls:
-        # - Query 1: fetchone() returns source deployment (uuid-source)
-        # - Query 2: fetchone() returns most recent deployment (uuid-current)
+        # - Query 1: fetchone() returns failed deployment (uuid-failed)
+        # - Query 2: fetchone() returns latest deployed (uuid-deployed)
         # - Query 3: INSERT (no fetch)
-        # - Query 4: UPDATE to mark rollback_from as rolled_back (no fetch)
-        # - Query 5: fetchone() returns the new rollback deployment
+        # - Query 4: UPDATE to mark failed as rolled_back (no fetch)
+        # - Query 5: UPDATE to set new deployment to in_progress (auto-release)
+        # - Query 6: fetchone() returns the new rollback deployment
         mock = MockCursor([
-            create_mock_deployment_row(id="uuid-source", version="1.0.0"),  # Source deployment
-            create_mock_deployment_row(id="uuid-current", version="2.0.0"),  # Current/most recent
+            create_mock_deployment_row(id="uuid-failed", version="2.0.0", status="in_progress"),
+            create_mock_deployment_row(id="uuid-deployed", version="1.0.0", status="deployed"),
             create_mock_deployment_row(
                 id="uuid-new",
                 version="1.0.0",
+                status="in_progress",
                 trigger="rollback",
-                source_deployment_id="uuid-source",
-                rollback_from_deployment_id="uuid-current",
-            ),  # New rollback deployment returned
+                source_deployment_id="uuid-deployed",
+                rollback_from_deployment_id="uuid-failed",
+            ),
         ])
 
         def override_get_cursor() -> Generator[MockCursor, None, None]:
@@ -351,21 +388,26 @@ class TestRollback:
 
         try:
             with TestClient(app) as client:
-                response = client.post("/v1/deployments/uuid-source/rollback")
+                response = client.post("/v1/deployments/uuid-failed/rollback")
                 assert response.status_code == 201
-                # Verify INSERT was called with rollback trigger
-                insert_params = mock.executed_params[2]  # Third query is the INSERT
+                # Verify INSERT copies from the deployed version
+                insert_params = mock.executed_params[2]
                 assert insert_params["trigger"] == "rollback"
-                assert insert_params["source_deployment_id"] == "uuid-source"
-                # Verify UPDATE was called to mark rollback_from deployment as rolled_back
-                update_params = mock.executed_params[3]  # Fourth query is the UPDATE
+                assert insert_params["source_deployment_id"] == "uuid-deployed"
+                assert insert_params["rollback_from_deployment_id"] == "uuid-failed"
+                # Verify UPDATE marks the failed deployment as rolled_back
+                update_params = mock.executed_params[3]
                 assert update_params["status"] == "rolled_back"
-                assert update_params["id"] == "uuid-current"
+                assert update_params["id"] == "uuid-failed"
+                # Verify auto-release: UPDATE sets new deployment to in_progress
+                auto_release_params = mock.executed_params[4]
+                assert auto_release_params["status"] == "in_progress"
                 # Response comes from mock data
                 data = response.json()
                 assert data["trigger"] == "rollback"
-                assert data["source_deployment_id"] == "uuid-source"
-                assert data["rollback_from_deployment_id"] == "uuid-current"
+                assert data["status"] == "in_progress"
+                assert data["source_deployment_id"] == "uuid-deployed"
+                assert data["rollback_from_deployment_id"] == "uuid-failed"
         finally:
             app.dependency_overrides.clear()
 
@@ -384,5 +426,27 @@ class TestRollback:
                 response = client.post("/v1/deployments/nonexistent-uuid/rollback")
                 assert response.status_code == 404
                 assert "Deployment not found" in response.json()["detail"]
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_rollback_no_deployed_version(self, mock_token: TokenPayload) -> None:
+        """Rollback fails when no successful deployment exists."""
+        # Only the failed deployment exists, no deployed version
+        mock = MockCursor([
+            create_mock_deployment_row(id="uuid-failed", version="1.0.0", status="in_progress"),
+            # No deployed version found (fetchone returns None)
+        ])
+
+        def override_get_cursor() -> Generator[MockCursor, None, None]:
+            yield mock
+
+        app.dependency_overrides[get_cursor] = override_get_cursor
+        app.dependency_overrides[verify_token] = lambda: mock_token
+
+        try:
+            with TestClient(app) as client:
+                response = client.post("/v1/deployments/uuid-failed/rollback")
+                assert response.status_code == 404
+                assert "No successful deployment found" in response.json()["detail"]
         finally:
             app.dependency_overrides.clear()

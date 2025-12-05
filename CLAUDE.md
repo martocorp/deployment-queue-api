@@ -53,14 +53,21 @@ Deployments are uniquely identified by a "taxonomy" - a combination of: `organis
 
 ### Auto-Skip Behavior
 
-When a deployment is marked as `deployed`, all other scheduled deployments for the same taxonomy are automatically marked as `skipped`. This happens in `_skip_scheduled_deployments()` and ensures the deployment queue stays clean.
+When a deployment is marked as `deployed`, scheduled deployments for the same taxonomy with semantically **older versions** are automatically marked as `skipped`. This uses semantic versioning comparison (e.g., `1.2.3 < 1.3.0 < 2.0.0`). Deployments with newer versions remain scheduled. This happens in `_skip_older_version_deployments()`.
 
 ### Deployment Lineage
 
 Deployments track their lineage for rollback traceability:
 - **trigger**: `manual`, `auto`, or `rollback`
-- **source_deployment_id**: For rollbacks, points to the deployment being restored
-- **rollback_from_deployment_id**: For rollbacks, points to the failed deployment being rolled back from
+- **source_deployment_id**: For rollbacks, points to the successful deployment being copied from
+- **rollback_from_deployment_id**: For rollbacks, points to the failed deployment being rolled back
+
+### Rollback Behavior
+
+When `POST /v1/deployments/{id}/rollback` is called:
+1. The deployment with the given ID is marked as `rolled_back`
+2. The API finds the latest successful (`deployed`) deployment for the same taxonomy
+3. A new deployment is created copying from that successful deployment, with status `scheduled`
 
 ### Module Structure
 
